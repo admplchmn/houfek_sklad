@@ -1,0 +1,103 @@
+# Kontroly před odevzdáním běží automaticky na každý pull request (TD-02).
+#
+#   predesile      – totéž co `python -m nastroje.over_vse` bez databáze: testy, pravidla
+#                    ostrovů P1–P6, kontrakty P10, api.js, ruff. Integrační testy se přeskočí.
+#   integrace-tsql – SQL Server 2022 v kontejneru: migrate 001–004 a integrační testy, které
+#                    už v repozitáři jsou (schéma, pohledy, zámky 1222, requestId – TD-01).
+#                    Testy repozitářů ostrovů přibydou s jejich fází 1; zatím tu není co testovat,
+#                    protože repozitáře jsou prázdné a vzorový svět v DB ještě nevzniká (Krok 0, P1).
+#
+# Stejné kontroly lokálně: docker compose up -d && python -m nastroje.testovaci_db
+# && python -m nastroje.over_vse (docs/vyvoj.md 1.1).
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master, main]
+
+# Nový push do stejné větve zruší běh, který už není aktuální.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  predesile:
+    name: Předběžné kontroly (bez DB)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -r requirements-vyvoj.txt
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Ověřit, že snímek kontraktů odpovídá kódu (P10)
+        run: python -m nastroje.kontrakty over
+      - name: Všechny kontroly
+        run: python -m nastroje.over_vse
+
+  integrace-tsql:
+    name: Integrační testy (SQL Server 2022)
+    runs-on: ubuntu-latest
+    services:
+      sqlserver:
+        image: mcr.microsoft.com/mssql/server:2022-latest
+        env:
+          ACCEPT_EULA: "Y"
+          MSSQL_PID: Developer
+          MSSQL_SA_PASSWORD: ${{ env.CI_TEST_HESLO }}
+        ports:
+          - "1433:1433"
+        # Bez --health-cmd: kontrola připravenosti by závisela na tom, v kterém adresáři je zrovna
+        # sqlcmd (/opt/mssql-tools vs. /opt/mssql-tools18). Krok „Počkat“ níž používá pyodbc,
+        # který máme stejně nainstalovaný pro aplikaci, a řekne to samé.
+    env:
+      # Jednorázové heslo kontejneru, který žije jen po dobu běhu jobu a nevznikají v něm žádná
+      # reálná data. Není to heslo žádné skutečné databáze – proto smí být v repozitáři
+      # (AGENTS.md zakazuje hesla přístupová, ne heslo do chvilkového kontejneru v CI).
+      CI_TEST_HESLO: "HoufekTest2026"
+      HOUFEK_TEST_DB_SERVER: localhost,1433
+      HOUFEK_TEST_DB_NAZEV: HoufekSklad_TEST
+      HOUFEK_TEST_DB_UZIVATEL: sa
+      HOUFEK_TEST_DB_HESLO: ${{ env.CI_TEST_HESLO }}
+      HOUFEK_TEST_DB_DUVEROVAT_CERTIFIKATU: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: ODBC Driver 18 for SQL Server
+        run: |
+          curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo tee /etc/apt/trusted.gpg.d/microsoft.asc
+          curl -fsSL "https://packages.microsoft.com/config/ubuntu/$(lsb_release -rs)/prod.list" \
+            | sudo tee /etc/apt/sources.list.d/msprod.list
+          sudo apt-get update
+          sudo ACCEPT_EULA=Y apt-get install -y msodbcsql18 unixodbc-dev
+      - run: pip install -r requirements-vyvoj.txt
+      - name: Počkat, než SQL Server přijímá spojení
+        run: |
+          python - <<'PY'
+          import os, time
+          import pyodbc
+
+          retezec = ("DRIVER={ODBC Driver 18 for SQL Server};SERVER=localhost,1433;DATABASE=master;"
+                     "UID=sa;PWD=" + os.environ["CI_TEST_HESLO"] + ";Encrypt=yes;TrustServerCertificate=yes;")
+          for _ in range(60):
+              try:
+                  pyodbc.connect(retezec, timeout=5).close()
+                  break
+              except Exception as chyba:
+                  posledni = chyba
+                  time.sleep(2)
+          else:
+              raise SystemExit("SQL Server není připravený do 120 s: %s" % posledni)
+          PY
+      - name: Založit HoufekSklad_TEST a provést migrace 001–004
+        run: python -m nastroje.testovaci_db
+      - name: Všechny kontroly včetně T-SQL
+        run: python -m nastroje.over_vse

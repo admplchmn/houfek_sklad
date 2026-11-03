@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block titulek %}Vývojářský panel – HOUFEK Sklad{% endblock %}
+{% block obsah %}
+<h1>Vývojářský panel</h1>
+
+{% if vyvoj %}
+<form id="prihlaseni" onsubmit="return false">
+  <strong>Vývojové přihlášení</strong> <span class="poznamka">jen při HOUFEK_VYVOJ=1, než bude hotový ostrov Identita</span>
+  <label>UzivatelID <span>musí existovat v tabulce Uzivatel</span><input id="uzivatelId" type="number" min="1" value="1"></label>
+  <label>TerminalID <span>volitelné</span><input id="terminalId" type="number" min="1"></label>
+  <div class="tlacitka">
+    <button type="button" onclick="api.post('/api/system/vyvojove-prihlaseni', {uzivatelId: +uzivatelId.value, terminalId: terminalId.value ? +terminalId.value : null}, this).then(() => location.reload())">Přihlásit se všemi oprávněními</button>
+  </div>
+</form>
+{% endif %}
+
+<form id="volani" onsubmit="return false">
+  <strong>Libovolné volání API</strong>
+  <label>Metoda
+    <select id="metoda"><option>GET</option><option>POST</option><option>PATCH</option></select>
+  </label>
+  <label>Cesta <span>např. /api/system/zdravi</span><input id="cesta" value="/api/system/zdravi"></label>
+  <label>Tělo (JSON) <span>u POST se requestId doplní automaticky</span><textarea id="telo">{}</textarea></label>
+  <div class="tlacitka">
+    <button type="button" data-potvrdit onclick="odeslat(this)">Odeslat</button>
+  </div>
+</form>
+
+<script>
+  function odeslat(tlacitko) {
+    let telo;
+    try { telo = JSON.parse(document.getElementById("telo").value || "{}"); }
+    catch (e) { alert("Tělo není platný JSON: " + e.message); return; }
+    const m = document.getElementById("metoda").value, c = document.getElementById("cesta").value;
+    if (m === "GET") api.get(c);
+    else if (m === "POST") api.post(c, telo, tlacitko);
+    else api.patch(c, telo, tlacitko);
+  }
+</script>
+{% endblock %}

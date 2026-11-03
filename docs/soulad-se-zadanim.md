@@ -1,0 +1,115 @@
+# Soulad se zadáním: kontrolní seznam
+
+**Stav k:** 3. 11. 2026 · **Pro:** vedoucího projektu a programátory všech ostrovů · **Zadání:** v1.40, obrázky ke kap. 5–21 · **Rozsah:** schéma (`sql/migrace`), kontrakty a pravidla ostrovů B–G, vzorek XLSM ([rozbor](migrace-xlsm.md))
+
+Obrázky ze zadání se dodržují striktně. Kde si zadání protiřečí nebo dává nelogický scénář, rozhoduje vedoucí projektu. Rozhodnutí jsou v tabulce níže. Než ostrov změní chování popsané v zadání, zkontroluje tento seznam.
+
+Čísla R-xx (rozpory), A-xx (nejasnosti) a Q-xx (otázky) jsou ze sdíleného dokumentu „Analýza zadání a osnova aplikace“.
+
+**Výsledek k 3. 11.:**
+- Schéma, kontrakty a pravidla odpovídají obrázkům kap. 5–21.
+- Kontrola našla 7 rozdílů (Z-01 až Z-07), všechny jsou opravené a mají test.
+- Vedoucí projektu rozhodl 10 sporných bodů (D-01 až D-10).
+- Dva body jsou náš výklad a dají se změnit (V-01, V-02).
+
+## Opraveno
+
+Všechna nová pole jsou přidaná, nic se nepřejmenovalo ani neubralo (P10).
+
+| # | Kap. | Co nesedělo | Oprava | Test |
+|---|---|---|---|---|
+| Z-01 | 7.2 | Prázdný STAT box byl šedý s výstrahou (náš původní návrh Q-31). Zadání chce zelenou (7.2 i 17.1 krok 7, A-04) a minimum barvu měnit nesmí. | `prehledy.domena.barva_boxu`: blokovaný, úplně prázdný, DYN s obsahem, STAT s obsahem. Kód `SEDA_VYSTRAHA` zrušen. | `test_barvy` |
+| Z-02 | 17.2 | Výstup pro SVG neměl seřazené Pozice P01… | `kodPoziceUrovne` u každého boxu | `test_rozlozeni` |
+| Z-03 | 17.1 krok 7 | DYN box s obsahem byl bílý podle 7.2 | modrý, kód `MODRA` (D-05) | `test_barvy`, `test_rozlozeni` |
+| Z-04 | 12.2 | Po skenu zdrojové pozice byl díl a stav jen v textu popisu | výsledek skenu pozice nese `obsah`: díl a počet kusů | `test_sken` |
+| Z-05 | 13.1 | Chyběl filtr „pouze díly s aktivním STAT umístěním“ a klik na konkrétní umístění | filtr `jenSeStat`; řádek nese `mista[]`, každé místo se zvýrazněním | `test_zasoby_a_laser` |
+| Z-06 | 15 | Karta neměla kód STAT boxu (BSTAT037) ani „Chybí do maxima“ | `stat.kodBoxu`, `stat.chybiDoMaximaKs` | `test_karta` |
+| Z-07 | 17 | Popup pozice v SVG neměl odkaz do Vaultu | `pozice[].vaultUrl` | `test_rozlozeni` |
+
+## Rozhodnutí vedoucího projektu
+
+| # | Kdy | Sporný bod | Rozhodnutí | Dopad |
+|---|---|---|---|---|
+| D-01 | 2. 11. | 7.1: kód pozice C7 u DYN je „R“, nebo „R1…Rn“? (Q-01, R-02) | jen **R** (BPLE052-R); R1…Rn je značení rozměrových variant | beze změny |
+| D-02 | 2. 11. | XLSM má kódy BPLE01 (2 číslice), kap. 11.2 chce 3 | převést na **BPLE001**, nové štítky | import (H) |
+| D-03 | 2. 11. | boxy v XLSM mají pevný díl a minimum (chování STAT), ale kód BPLE | **typ určí sklad po boxech** (podle D-07 v aplikaci) | import (H), administrace |
+| D-04 | 2. 11. | XLSM JINÉ INFORMACE a „(N kusů na stroj)“ nemají v zadání cíl | **poznámka k dílu** | `Dil.Poznamka` (Δ17 v 001), pole `poznamka` v kontraktu D |
+| D-05 | 3. 11. | barva DYN boxu s obsahem: 7.2 bílá, 17.1 krok 7 modrá (Q-31, R-03) | **modrá** | Z-03 |
+| D-06 | 3. 11. | převod starého STAV_BOXU (Q-21) | návrh přijat: BLOK → blokovaný box, MULTI → přihrádky, 0, OPER, MEOP a POL se nepřevádí | import (H) |
+| D-07 | 3. 11. | doplňovací tabulku od skladu firma nemá | import vezme z XLSM, co tam je; zbytek se **doplní a mění v aplikaci** | [migrace-xlsm.md](migrace-xlsm.md), sekce 4 |
+| D-08 | 3. 11. | kap. 21.1.1 jmenuje pole odpovědi TransakceID | API dál vrací `transakceId`, psané jako ostatní pole (`requestId`, `cilKod`); údaj je stejný | beze změny |
+| D-09 | 3. 11. | obrázek U03 dělí BPLE002 na „A \| B“, tabulka 7.1 takové členění nemá (R-12) | chyba obrázku, platí **tabulka 7.1** | beze změny |
+| D-10 | 3. 11. | kap. 20: správa firem v administraci | **zatím ne**, otevřené na později; jediná firma HOUFEK je v počátečních datech | žádný endpoint; tabulka `Firma` je připravená |
+
+Schéma 001 ještě nikde v provozu neběželo, proto `Dil.Poznamka` přibyl přímo do něj. Po prvním spuštění už jen novou migrací (ADR-0003).
+
+## Náš výklad (změní se jedním rozhodnutím)
+
+| # | Kap. | Co zadání neříká | Výklad projektu |
+|---|---|---|---|
+| V-01 | 13.1 | výchozí hodnotu filtru „pouze díly s aktivním STAT umístěním“ | Filtr je zapnutý: monitoring hlídá zásobu ve STAT a souhrn počítá díly se STAT místem. Vypnutím přibudou díly, které leží jen v DYN, bez stavu. |
+| V-02 | 21 | co je „BoxID“ ve vyhledávání | kód boxu ze štítku (BPLE037). Vnitřní číselné ID uživatel nevidí. |
+
+## Kontrola po kapitolách
+
+| Kap. | Zadání (obrázek) | Projekt | Stav |
+|---|---|---|---|
+| 5 XLSM | mapování sloupců, žádné kopírování 1:1 | [migrace-xlsm.md](migrace-xlsm.md), import a doplnění v aplikaci (D-07) | ✔ |
+| 6 Hierarchie | Firma → Pracoviště → Regál → Úroveň → Pozice → Box → Vnitřní pozice → Obsah | tabulky a sloupce shodné; `Box.PoziceID` NOT NULL a unikátní mezi aktivními boxy | ✔ s odchylkou Δ1 (G1, Q-04): vyměněný box zůstává v historii |
+| 6.1 Pracoviště | 8 kódů a názvů v daném pořadí | seed 001 přesně v tomto pořadí | ✔ |
+| 6.2 Pozice P01…Pn | jen pořadí boxu pro SVG, 1 Pozice = 1 Box | `Pozice.KodPozice` z `Poradi`; SVG řadí podle `Poradi` | ✔ |
+| 7 DYN / STAT | DYN se při 0 ks uvolní, STAT zůstává dílu | řádek obsahu se při 0 ks maže; vyhrazení drží `StatickeUmisteniDilu` | ✔ |
+| 7.1 Členění | C1–C7, V1–V6, písmena podle obrázku | šablona v 001 přihrádku po přihrádce; C7: DYN R, STAT 1 | ✔ (D-01, D-09) |
+| 7.2 Barva boxu | priorita blokovaný, prázdný, DYN, STAT; minimum barvu nemění | Z-01, Z-03 | ✔ |
+| 8 Kmenová data | IdentifikacniCislo, materiál, tloušťka, první operace, dávka, velikost, Vault, Aktivni | stejné sloupce; navíc název, rozměr pro V6 (Q-01), poznámka (D-04) | ✔ |
+| 8.1 Velikost pozice | pevná v kmeni dílu, nabídka jen stejné velikosti, V6 podle rozměru C7 | `vejde_se`, kandidáti DYN, `PotrebnaDelkaMM/HloubkaMM` | ✔ |
+| 8.2 Číselníky | materiály, tloušťky, první operace; filtry ze SQL | seed 001 podle tabulky; filtry z `/api/dily/ciselniky` a `/api/prehledy/ciselniky` | ✔ |
+| 9 Stav a historie | ObsahPozice a SkladovyPohyb; záporný stav a ruční přepis zakázané | CHECK `StavPo = StavPred + Mnozstvi ≥ 0`; DENY UPDATE na historii | ✔ |
+| 11 Barcode | kódy boxů, pozic, regálu, FullBoxKlic | všechny příklady ze zadání v testech parseru | ✔ |
+| 12.1 Zaskladnění DYN | díl → regál → kandidáti → cíl skenem nebo potvrzením → ObsahPozice + pohyb v jedné transakci; kandidát jen v aktivním DYN boxu, neblokovaný, prázdný, stejné velikosti, u V6 rozměr R pojme dávku; řazení podle čísla boxu | `GET /api/sklad/kandidati-dyn` (řazení `int(kod_boxu[-3:])`), `POST /prijem-dyn`, `zpusobPotvrzeni` SKEN/RUCNE (Q-15), rozměr R řízeně `POST /api/struktura/vnitrni-pozice/{id}/rozmer-c7` | ✔ |
+| 12.2 Vyskladnění DYN | sken zdroje, díl a stav, 0 < množství ≤ stav, při 0 ks smazat obsah, box zezelená | Z-04; `POST /api/sklad/vydej` (INSUFFICIENT_STOCK, `ocekavanyStavKs`); barva podle Z-01 | ✔ |
+| 12.3 Přesun | PRESUN-OUT + PRESUN-IN se stejným TransakceID, cíl kompatibilní a prázdný, jen celá dávka | `POST /api/sklad/presun` bez množství (WHOLE_BATCH_ONLY); „oblast“ = pracoviště (Q-07, A-01) | ✔ |
+| 13 STAT, min, max | OK / NA MINIMU / POD MINIMEM / VYČERPÁNO; jedno otevřené upozornění, uzavře se nad minimem; jedno aktivní přiřazení na pozici | `sklad.domena.stav_zasoby`, `vyhodnot_upozorneni`; filtrovaný UNIQUE index `UX_StatickeUmisteni_Pozice_Aktivni` | ✔ (stav 0 při minimu 0 = VYČERPÁNO, N-08) |
+| 13.1 Monitoring | souhrn, jedním klikem jen problémové, filtry, STAT a DYN zvlášť, klik na díl i na umístění | `GET /api/prehledy/zasoby` (`jenProblemove`, `jenSeStat`, `mista[]`); Z-05, V-01 | ✔ |
+| 14 Laser | první operace LASER, filtry materiál, tloušťka, operace, pod maximem; chybí = Maximum − STAT | `GET /api/prehledy/laser`; „doporučeno vyrobit“ s přepínačem `odecitatDyn`, dokud se nerozhodne Q-22 | ✔ (Q-22 otevřená) |
+| 15 Karta dílu | kmenová data, Vault (jinak „Výkres ve Vaultu není přiřazen“), STAT s aktuálně/min/max a chybí do maxima, DYN umístění, historie | `GET /api/prehledy/dily/{id}/karta`; Z-06; text pro chybějící Vault řeší UI (komentář v kontraktu) | ✔ |
+| 16 Vyhledávání | jedno vyhledávání pro díl, box, STAT a DYN pozici, regál; filtry pracoviště, operace, materiál, tloušťka, typ boxu, stav; vždy přepnout SVG a zvýraznit | `GET /api/prehledy/hledat`, `/sken/{kod}`; `zvyrazneni` regál → úroveň → box → přihrádka; více výsledků = seznam | ✔ |
+| 17 SVG regálů | mm, viewBox z boxů a okrajů, řazení podle Poradi, svislé centrování, přihrádky podle konfigurace, zvýraznění, popup | `GET /api/prehledy/urovne/{id}/rozlozeni`; Z-07; vzhled zvýraznění a popupu je práce UI (fáze 3) | ✔ |
+| 17.1 Princip SVG | kroky 1–8, vzorce X, šířky a výšky, barvy | `struktura.domena.rozmisteni_boxu` přesně podle vzorců; barvy Z-01, Z-03 | ✔ |
+| 17.2 Výstup API | metadata úrovně, seřazené Pozice, Box, rozměry, typ, členění, vnitřní pozice, obsah a stav | Z-02 | ✔ |
+| 18 Inventura | celý sklad i rozsah, slepá, korekce pohybem, JINÝ DÍL bez přepisu DilID | rozsahy FULL…POZICE, stavy ROZPRACOVANA/DOKONCENA/ZRUSENA, `zauctuj_korekci` | ✔ (zaúčtování nalezeného dílu ve STAT upřesňuje Q-17) |
+| 19 Role a terminály | OPER, SKL, MISTR, TECH, ADMIN; N:M přes RoleOpravneni; PIN jen hash; Terminal s kódem, názvem, pracovištěm a Aktivni | seed rolí, `RoleOpravneni`, `PinHash` (argon2), tabulka `Terminal` | ✔ (oprávnění rolím čeká na G4) |
+| 20 Administrace | díly, číselníky, firmy, pracoviště, regály, úrovně, boxy, STAT místa, min/max, uživatelé, role; žádné ruční přepsání počtu kusů; deaktivace místo DELETE; audit zásadních změn | endpointy C, D, E a B; počet kusů mění jen příjem, výdej, přesun, inventura a korekce; `004` bere DELETE; `AuditZmen` | ✔ kromě firem (D-10) |
+| 21 Oblasti API | čtení úrovně, vyhledávání, kandidáti, příjem a výdej, přesun, inventura, administrace | všechny oblasti mají endpointy (73 + 4 Platformy) | ✔ (V-02) |
+| 21.1 Datové kontrakty | ID od klienta nejsou důvěryhodná; před změnou znovu načíst stav ze SQL, ověřit oprávnění a podmínky | služby čtou stav uvnitř `@transakce` po zamčení pozic (ADR-0004, 0005); kontrola jen v JS se nepočítá | ✔ |
+| 21.1.1 Formát odpovědi | success, code (OK, POSITION_OCCUPIED, WRONG_PART, NO_PERMISSION …), message česky bez SQL chyby, data, TransakceID | obálka `success`, `code`, `message`, `data`, `transakceId`, navíc `varovani`; chyby SQL převádí `sql_chyby` | ✔ (D-08) |
+
+## Vzorové ukázky ze zadání: odkud se vezmou data
+
+Každý vzor ze zadání musí jít složit z databáze. Tabulka říká z čeho.
+
+| Vzor | Údaj | Databáze | API |
+|---|---|---|---|
+| 13.1 monitoring | STAT ks, DYN ks, Celkem, Minimum, Maximum, Stav | `v_ZasobaDilu` (StatKs, DynKs, CelkemKs, Min/Max, StavZasoby) | `GET /api/prehledy/zasoby` |
+| 13.1 monitoring | Umístění „STAT + 2× DYN“ a klik na místo | `v_ObsahPozice` + `v_Misto` | `umisteni`, `mista[]` |
+| 14 laser | materiál, tloušťka, STAT aktuálně, maximum, chybí do maxima | `v_Dil` + `v_ZasobaDilu` | `GET /api/prehledy/laser` |
+| 15 karta | první operace, materiál, tloušťka, dávka, velikost, Vault | `v_Dil` | `GET /api/prehledy/dily/{id}/karta` |
+| 15 karta | BSTAT037, aktuálně, min, max, chybí do maxima | `v_StatickeMisto` + `v_ZasobaDilu` | `stat.kodBoxu`, `stavKs`, `minimalniKs`, `maximalniKs`, `chybiDoMaximaKs` |
+| 15 karta | BPLE003-D, 30 ks | `v_ObsahPozice` + `v_Misto` | `umisteni[]` |
+| 15 karta | historie pohybů | `v_PohybDetail` | `posledniPohyby`, `GET /api/prehledy/pohyby?dilId=` |
+| 16 Model F | regál R01 → úroveň U03 → box BPLE037 → přihrádka D | `v_Misto` | `zvyrazneni` |
+| 17.1 příklad U03 | P01…P04, BPLE001, BPLE002, BSTAT037, BPLE010, šířky v mm | `Pozice`, `Box`, `CleneniBoxu`, `SablonaCleneni` | `GET /api/prehledy/urovne/{id}/rozlozeni` |
+| 17 popup | BoxID, díl, počet, Vault, stav | `Box`, `v_ObsahPozice`, `v_Dil` | `kodBoxu`, `pozice[].identifikacniCislo`, `pocetKs`, `vaultUrl`, `stavBoxu` |
+
+Čísla ve vzorech si navzájem neodpovídají (R-09). U AAR10044 má karta minimum 4, maximum 30 a 2 × 30 ks v DYN, monitoring minimum 10, maximum 40 a 18 ks v DYN. Na kód to vliv nemá a jako testovací data se vzory nepoužívají.
+
+## Rozpory v zadání
+
+Obrázky jsou podle kap. 17.2 ilustrační, závazná jsou pravidla v textu. Rozpor mezi dvěma pravidly rozhoduje vedoucí projektu.
+
+| # | Co si protiřečí | Jak je to vyřešené |
+|---|---|---|
+| R-03 | barva DYN s obsahem: tabulka 7.2 bílá, tabulka 17.1 krok 7 modrá | D-05: modrá |
+| R-04 | obrázek „Princip generování SVG“: „viewBox = rozměr úrovně“, „Y podle plochy úrovně“, „členění C1…C6“; text kap. 17 a 17.1: viewBox z vykreslených boxů a okrajů, C1…C7 | platí text, kap. 17 to říká výslovně |
+| R-09 | čísla ve vzorových ukázkách (viz výše) | neovlivňuje kód |
+| R-12 | stejný obrázek dělí BPLE002 na „A \| B“ | D-09: platí tabulka 7.1 |

@@ -1,0 +1,40 @@
+/* HOUFEK Sklad – jednoduché kontrolní UI. Čitelné na PC i na PDA. */
+:root {
+  --text: #1f2328; --tlumeny: #59636e; --okraj: #d1d9e0; --pozadi: #f6f8fa; --panel: #ffffff;
+  --akcent: #0b5cad; --ok: #1a7f37; --ok-pozadi: #eaf6ec; --chyba: #b42318; --chyba-pozadi: #fdecea;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 15px/1.45 system-ui, "Segoe UI", Roboto, sans-serif; color: var(--text); background: var(--pozadi); }
+header { display: flex; gap: 16px; align-items: center; justify-content: space-between; padding: 10px 16px;
+         background: #1f2937; color: #fff; }
+header a { color: #fff; text-decoration: none; font-weight: 600; }
+header .uzivatel { font-size: 13px; opacity: .85; }
+nav { padding: 8px 16px; background: var(--panel); border-bottom: 1px solid var(--okraj); display: flex; flex-wrap: wrap; gap: 6px 14px; }
+nav a { color: var(--akcent); text-decoration: none; }
+main { max-width: 960px; margin: 16px auto; padding: 0 16px; }
+h1 { font-size: 20px; margin: 0 0 12px; }
+form, .karta { background: var(--panel); border: 1px solid var(--okraj); border-radius: 8px; padding: 14px; margin-bottom: 14px; }
+label { display: block; margin: 0 0 10px; font-weight: 600; }
+label span { display: block; font-weight: 400; color: var(--tlumeny); font-size: 13px; }
+input, select, textarea { width: 100%; padding: 8px 10px; font: inherit; border: 1px solid var(--okraj); border-radius: 6px; background: #fff; }
+input[data-sken] { font-family: ui-monospace, Consolas, monospace; font-size: 17px; }
+textarea { font-family: ui-monospace, Consolas, monospace; min-height: 140px; }
+button { padding: 9px 16px; font: inherit; font-weight: 600; border-radius: 6px; border: 1px solid var(--akcent);
+         background: var(--akcent); color: #fff; cursor: pointer; }
+button.vedlejsi { background: #fff; color: var(--akcent); }
+button:disabled { opacity: .5; cursor: wait; }
+.tlacitka { display: flex; gap: 8px; flex-wrap: wrap; }
+table { width: 100%; border-collapse: collapse; background: var(--panel); }
+th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--okraj); font-size: 14px; }
+.dlazdice { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.dlazdice a { display: block; padding: 14px; background: var(--panel); border: 1px solid var(--okraj); border-radius: 8px;
+              color: var(--text); text-decoration: none; font-weight: 600; }
+.poznamka { color: var(--tlumeny); font-size: 13px; }
+.odpoved { position: sticky; bottom: 0; max-width: 960px; margin: 16px auto 0; padding: 10px 16px; border-top: 3px solid var(--okraj);
+           background: var(--panel); }
+.odpoved.ok { border-top-color: var(--ok); background: var(--ok-pozadi); }
+.odpoved.chyba { border-top-color: var(--chyba); background: var(--chyba-pozadi); }
+.odpoved .kod { font-family: ui-monospace, Consolas, monospace; font-weight: 700; }
+.odpoved .transakce { color: var(--tlumeny); font-size: 12px; }
+.odpoved pre { max-height: 240px; overflow: auto; background: #fff; padding: 8px; border: 1px solid var(--okraj); font-size: 12px; }
+@media (max-width: 480px) { main { padding: 0 8px; } header { flex-wrap: wrap; } }

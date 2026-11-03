@@ -1,0 +1,667 @@
+{
+  "dily": {
+    "funkce": {
+      "hledej_dily": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "text",
+            "vychozi": false
+          },
+          {
+            "nazev": "material",
+            "vychozi": true
+          },
+          {
+            "nazev": "tloustka_mm",
+            "vychozi": true
+          },
+          {
+            "nazev": "prvni_operace",
+            "vychozi": true
+          },
+          {
+            "nazev": "limit",
+            "vychozi": true
+          }
+        ],
+        "vraci": "list[app.ostrovy.dily.rozhrani.DilInfo]"
+      },
+      "nacti_ciselniky": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          }
+        ],
+        "vraci": "dict[str, tuple[app.platforma.typy.PolozkaCiselniku, ...]]"
+      },
+      "nacti_dily": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "dil_ids",
+            "vychozi": false
+          }
+        ],
+        "vraci": "dict[int, app.ostrovy.dily.rozhrani.DilInfo]"
+      },
+      "najdi_dil": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "identifikacni_cislo",
+            "vychozi": false
+          }
+        ],
+        "vraci": "<class 'app.ostrovy.dily.rozhrani.DilInfo'>"
+      },
+      "normalizuj_identifikacni_cislo": {
+        "parametry": [
+          {
+            "nazev": "text",
+            "vychozi": false
+          }
+        ],
+        "vraci": "<class 'str'>"
+      },
+      "zaloz_dil": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "kdo",
+            "vychozi": false
+          },
+          {
+            "nazev": "dil",
+            "vychozi": false
+          }
+        ],
+        "vraci": "<class 'int'>"
+      }
+    },
+    "dto": {
+      "DilInfo": [
+        "dil_id",
+        "identifikacni_cislo",
+        "nazev",
+        "material",
+        "tloustka_mm",
+        "prvni_operace",
+        "standardni_davka_ks",
+        "potreba",
+        "vault_url",
+        "aktivni"
+      ],
+      "NovyDil": [
+        "identifikacni_cislo",
+        "nazev",
+        "material",
+        "tloustka_mm",
+        "prvni_operace",
+        "standardni_davka_ks",
+        "potreba",
+        "vault_url",
+        "poznamka"
+      ]
+    }
+  },
+  "identita": {
+    "funkce": {
+      "nacti_uzivatele": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "uzivatel_ids",
+            "vychozi": false
+          }
+        ],
+        "vraci": "dict[int, app.ostrovy.identita.rozhrani.UzivatelInfo]"
+      }
+    },
+    "dto": {
+      "UzivatelInfo": [
+        "uzivatel_id",
+        "osobni_cislo",
+        "cele_jmeno",
+        "kod_role",
+        "aktivni"
+      ]
+    }
+  },
+  "inventura": {
+    "funkce": {},
+    "dto": {}
+  },
+  "migrace": {
+    "funkce": {},
+    "dto": {}
+  },
+  "prehledy": {
+    "funkce": {},
+    "dto": {}
+  },
+  "sklad": {
+    "funkce": {
+      "nacti_ciselniky": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          }
+        ],
+        "vraci": "dict[str, tuple[app.platforma.typy.PolozkaCiselniku, ...]]"
+      },
+      "obsah_mist": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "vnitrni_pozice_ids",
+            "vychozi": false
+          }
+        ],
+        "vraci": "dict[int, app.ostrovy.sklad.rozhrani.ObsahInfo]"
+      },
+      "posledni_pohyby": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "vnitrni_pozice_ids",
+            "vychozi": false
+          }
+        ],
+        "vraci": "dict[int, int | None]"
+      },
+      "prirad_stat_misto": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "kdo",
+            "vychozi": false
+          },
+          {
+            "nazev": "dil_id",
+            "vychozi": false
+          },
+          {
+            "nazev": "vnitrni_pozice_id",
+            "vychozi": false
+          },
+          {
+            "nazev": "minimalni_ks",
+            "vychozi": false
+          },
+          {
+            "nazev": "optimalni_ks",
+            "vychozi": false
+          },
+          {
+            "nazev": "maximalni_ks",
+            "vychozi": false
+          },
+          {
+            "nazev": "duvod",
+            "vychozi": true
+          }
+        ],
+        "vraci": "<class 'int'>"
+      },
+      "stat_mista": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "vnitrni_pozice_ids",
+            "vychozi": true
+          },
+          {
+            "nazev": "dil_ids",
+            "vychozi": true
+          }
+        ],
+        "vraci": "list[app.ostrovy.sklad.rozhrani.StatMistoInfo]"
+      },
+      "stav_zasoby": {
+        "parametry": [
+          {
+            "nazev": "stav_ks",
+            "vychozi": false
+          },
+          {
+            "nazev": "minimum_ks",
+            "vychozi": false
+          }
+        ],
+        "vraci": "<class 'str'>"
+      },
+      "zauctuj_korekci": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "kdo",
+            "vychozi": false
+          },
+          {
+            "nazev": "vnitrni_pozice_id",
+            "vychozi": false
+          },
+          {
+            "nazev": "dil_id",
+            "vychozi": false
+          },
+          {
+            "nazev": "novy_stav_ks",
+            "vychozi": false
+          },
+          {
+            "nazev": "typ_pohybu",
+            "vychozi": false
+          },
+          {
+            "nazev": "poznamka",
+            "vychozi": true
+          }
+        ],
+        "vraci": "<class 'app.ostrovy.sklad.rozhrani.PohybInfo'>"
+      }
+    },
+    "dto": {
+      "ObsahInfo": [
+        "vnitrni_pozice_id",
+        "dil_id",
+        "pocet_ks"
+      ],
+      "PohybInfo": [
+        "pohyb_id",
+        "transakce_id",
+        "typ_pohybu",
+        "dil_id",
+        "vnitrni_pozice_id",
+        "mnozstvi",
+        "stav_pred_ks",
+        "stav_po_ks"
+      ],
+      "StatMistoInfo": [
+        "stat_umisteni_id",
+        "dil_id",
+        "vnitrni_pozice_id",
+        "minimalni_ks",
+        "optimalni_ks",
+        "maximalni_ks"
+      ]
+    }
+  },
+  "struktura": {
+    "funkce": {
+      "kandidatni_mista_dyn": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "regal_id",
+            "vychozi": false
+          },
+          {
+            "nazev": "velikost",
+            "vychozi": false
+          },
+          {
+            "nazev": "cele_pracoviste",
+            "vychozi": true
+          }
+        ],
+        "vraci": "list[app.ostrovy.struktura.rozhrani.MistoInfo]"
+      },
+      "nacti_ciselniky": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          }
+        ],
+        "vraci": "dict[str, tuple[app.platforma.typy.PolozkaCiselniku, ...]]"
+      },
+      "nacti_mista": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "vnitrni_pozice_ids",
+            "vychozi": false
+          }
+        ],
+        "vraci": "dict[int, app.ostrovy.struktura.rozhrani.MistoInfo]"
+      },
+      "najdi_objekt": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "kod",
+            "vychozi": false
+          }
+        ],
+        "vraci": "<class 'app.ostrovy.struktura.rozhrani.NalezenyObjekt'>"
+      },
+      "najdi_vnitrni_pozici": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "kod",
+            "vychozi": false
+          }
+        ],
+        "vraci": "<class 'app.ostrovy.struktura.rozhrani.MistoInfo'>"
+      },
+      "pozice_v_rozsahu": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "typ_rozsahu",
+            "vychozi": false
+          },
+          {
+            "nazev": "cil_id",
+            "vychozi": false
+          }
+        ],
+        "vraci": "list[int]"
+      },
+      "rozloz_kod": {
+        "parametry": [
+          {
+            "nazev": "kod",
+            "vychozi": false
+          }
+        ],
+        "vraci": "<class 'app.ostrovy.struktura.rozhrani.RozlozenyKod'>"
+      },
+      "rozlozeni_urovne": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "uroven_id",
+            "vychozi": false
+          }
+        ],
+        "vraci": "<class 'app.ostrovy.struktura.rozhrani.RozlozeniUrovne'>"
+      },
+      "stav_boxu": {
+        "parametry": [
+          {
+            "nazev": "blokovany",
+            "vychozi": false
+          },
+          {
+            "nazev": "pocet_obsazenych",
+            "vychozi": false
+          }
+        ],
+        "vraci": "<class 'str'>"
+      },
+      "vejde_se": {
+        "parametry": [
+          {
+            "nazev": "misto",
+            "vychozi": false
+          },
+          {
+            "nazev": "potreba",
+            "vychozi": false
+          }
+        ],
+        "vraci": "<class 'bool'>"
+      },
+      "zaloz_box": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "kdo",
+            "vychozi": false
+          },
+          {
+            "nazev": "uroven_id",
+            "vychozi": false
+          },
+          {
+            "nazev": "poradi",
+            "vychozi": false
+          },
+          {
+            "nazev": "typ_boxu",
+            "vychozi": false
+          },
+          {
+            "nazev": "kod_cleneni",
+            "vychozi": false
+          },
+          {
+            "nazev": "delka_mm",
+            "vychozi": false
+          },
+          {
+            "nazev": "hloubka_mm",
+            "vychozi": false
+          },
+          {
+            "nazev": "kod_boxu",
+            "vychozi": true
+          }
+        ],
+        "vraci": "<class 'int'>"
+      },
+      "zaloz_pracoviste": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "kdo",
+            "vychozi": false
+          },
+          {
+            "nazev": "kod_pracoviste",
+            "vychozi": false
+          },
+          {
+            "nazev": "nazev",
+            "vychozi": false
+          }
+        ],
+        "vraci": "<class 'int'>"
+      },
+      "zaloz_regal": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "kdo",
+            "vychozi": false
+          },
+          {
+            "nazev": "pracoviste_id",
+            "vychozi": false
+          },
+          {
+            "nazev": "kod_regalu",
+            "vychozi": false
+          },
+          {
+            "nazev": "nazev",
+            "vychozi": false
+          }
+        ],
+        "vraci": "<class 'int'>"
+      },
+      "zaloz_uroven": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "kdo",
+            "vychozi": false
+          },
+          {
+            "nazev": "regal_id",
+            "vychozi": false
+          },
+          {
+            "nazev": "kod_urovne",
+            "vychozi": false
+          },
+          {
+            "nazev": "poradi",
+            "vychozi": false
+          },
+          {
+            "nazev": "delka_plochy_mm",
+            "vychozi": false
+          },
+          {
+            "nazev": "hloubka_plochy_mm",
+            "vychozi": false
+          }
+        ],
+        "vraci": "<class 'int'>"
+      },
+      "zamkni_mista": {
+        "parametry": [
+          {
+            "nazev": "spoj",
+            "vychozi": false
+          },
+          {
+            "nazev": "vnitrni_pozice_ids",
+            "vychozi": false
+          }
+        ],
+        "vraci": "<class 'NoneType'>"
+      }
+    },
+    "dto": {
+      "BoxVRozlozeni": [
+        "box_id",
+        "kod_boxu",
+        "typ_boxu",
+        "kod_cleneni",
+        "blokovany",
+        "x_mm",
+        "y_mm",
+        "delka_mm",
+        "hloubka_mm",
+        "pozice",
+        "kod_pozice_urovne"
+      ],
+      "MistoInfo": [
+        "vnitrni_pozice_id",
+        "box_id",
+        "kod",
+        "kod_boxu",
+        "kod_pozice",
+        "typ_boxu",
+        "velikost",
+        "rozmer_c7",
+        "blokovano",
+        "poradi_v_boxu",
+        "pracoviste",
+        "regal_id",
+        "uroven_id",
+        "adresa",
+        "box_blokovany"
+      ],
+      "NalezenyObjekt": [
+        "typ",
+        "kod",
+        "adresa",
+        "regal_id",
+        "uroven_id",
+        "box_id",
+        "vnitrni_pozice_id"
+      ],
+      "PoziceVRozlozeni": [
+        "vnitrni_pozice_id",
+        "kod_pozice",
+        "velikost",
+        "blokovano",
+        "rel_x",
+        "rel_y",
+        "rel_sirka",
+        "rel_hloubka"
+      ],
+      "RozlozeniUrovne": [
+        "uroven_id",
+        "kod_urovne",
+        "regal_id",
+        "kod_regalu",
+        "pracoviste",
+        "delka_plochy_mm",
+        "hloubka_plochy_mm",
+        "sirka_svg_mm",
+        "vyska_svg_mm",
+        "boxy"
+      ],
+      "RozlozenyKod": [
+        "typ",
+        "text",
+        "typ_boxu",
+        "kod_pracoviste",
+        "kod_regalu",
+        "kod_urovne",
+        "kod_boxu",
+        "kod_pozice"
+      ]
+    }
+  }
+}

@@ -1,0 +1,23 @@
+# Testovací SQL Server pro vývoj a integrační testy (Docker Desktop). Postup: docs/vyvoj.md, sekce 1.1.
+#
+#   docker compose up -d      spustí SQL Server 2022 Developer na localhost:1433
+#   docker compose stop       zastaví ho, data zůstanou
+#   docker compose down -v    smaže ho i s daty (příště se založí znovu z migrací)
+#
+# Heslo účtu sa se bere z .env (HOUFEK_TEST_DB_HESLO), do repozitáře nikdy nepatří.
+# Jen pro testy: databáze PowerKey ani provozní data sem nepatří.
+services:
+  sql:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: houfek-sql-test
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: Developer
+      MSSQL_SA_PASSWORD: ${HOUFEK_TEST_DB_HESLO:?Vyplňte HOUFEK_TEST_DB_HESLO v souboru .env}
+    ports:
+      - "1433:1433"
+    volumes:
+      - houfek-sql-data:/var/opt/mssql
+
+volumes:
+  houfek-sql-data:

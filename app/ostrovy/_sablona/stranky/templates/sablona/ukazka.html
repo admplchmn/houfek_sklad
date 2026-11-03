@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block titulek %}Šablona – HOUFEK Sklad{% endblock %}
+{% block obsah %}
+<h1>Šablona: založení položky</h1>
+<form onsubmit="return false">
+  <label>Kód <span>naskenujte nebo napište, Enter = další pole</span><input id="kod" data-sken></label>
+  <label>Počet ks<input id="pocet" type="number" min="1" data-dalsi></label>
+  <div class="tlacitka">
+    <button type="button" data-potvrdit
+            onclick="api.post('/api/sablona/polozky', {kod: kod.value, pocetKs: +pocet.value}, this)">Potvrdit</button>
+  </div>
+</form>
+{% endblock %}

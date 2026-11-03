@@ -1,0 +1,20 @@
+# Vlastníci ostrovů (sekce 8 dokumentu Ostrovy). Po založení repozitáře přejmenovat na
+# .github/CODEOWNERS (GitHub) nebo nastavit povinné schvalovatele (Azure DevOps / GitLab)
+# a místo <P1>…<P6> doplnit skutečné účty programátorů.
+#
+# /app/platforma/              <P1>
+# /sql/                        <P1>
+# /tests/                      <P1>
+# /kontrakty/                  <P1>
+# /app/ostrovy/__init__.py     <P1>
+# /app/ostrovy/identita/       <P1>
+# /app/ostrovy/struktura/      <P2>
+# /app/ostrovy/sklad/          <P3>
+# /app/ostrovy/dily/           <P4>
+# /app/ostrovy/inventura/      <P5>
+# /app/ostrovy/prehledy/       <P6>
+# /app/ostrovy/migrace/        <P4>
+# Změny rozhraní, kontraktů a pohledů navíc schvaluje P1:
+# /app/ostrovy/*/rozhrani.py   <P1>
+# /app/ostrovy/*/kontrakty.py  <P1>
+# /app/ostrovy/*/pohledy.sql   <P1>

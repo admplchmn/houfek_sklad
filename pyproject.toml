@@ -1,0 +1,13 @@
+# Nastavení nástrojů. Závislosti jsou v requirements.txt a requirements-vyvoj.txt.
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "app"]
+python_files = ["test_*.py"]
+filterwarnings = ["ignore::ResourceWarning"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]

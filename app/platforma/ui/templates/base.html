@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="cs">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block titulek %}HOUFEK Sklad{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('platforma_ui.static', filename='styl.css') }}">
+  <script src="{{ url_for('platforma_ui.static', filename='api.js') }}" defer></script>
+  <script src="{{ url_for('platforma_ui.static', filename='sken.js') }}" defer></script>
+</head>
+<body>
+  <header>
+    <a href="{{ url_for('platforma_ui.index') }}">HOUFEK Sklad</a>
+    <span class="uzivatel">
+      {% if prihlaseny %}Uživatel {{ prihlaseny.uzivatel_id }} · {{ prihlaseny.kod_role }}{% if prihlaseny.terminal_id %} · terminál {{ prihlaseny.terminal_id }}{% endif %}
+      {% else %}Nepřihlášen{% endif %}
+    </span>
+  </header>
+  <nav>
+    {% for polozka in menu %}<a href="{{ polozka.cesta }}">{{ polozka.nazev }}</a>{% endfor %}
+    {% if vyvoj %}<a href="{{ url_for('platforma_ui.vyvoj') }}">Vývojářský panel</a><a href="/api/docs">Swagger</a>{% endif %}
+  </nav>
+  <main>
+    {% block obsah %}{% endblock %}
+  </main>
+  <section id="odpoved-api" class="odpoved" aria-live="polite">
+    <strong>Odpověď API</strong> · <span class="kod">—</span>
+    <div class="zprava"></div>
+    <ul class="varovani"></ul>
+    <div class="transakce"></div>
+    <details><summary>JSON</summary><pre></pre></details>
+  </section>
+</body>
+</html>

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block obsah %}
+<h1>Menu</h1>
+{% if not prihlaseny %}
+  <p class="karta">Nejste přihlášen.
+  {% if vyvoj %}Ve vývojovém režimu se přihlaste ve <a href="{{ url_for('platforma_ui.vyvoj') }}">vývojářském panelu</a>.
+  {% else %}Přihlášení doplní ostrov Identita.{% endif %}</p>
+{% endif %}
+<div class="dlazdice">
+  {% for polozka in menu %}<a href="{{ polozka.cesta }}">{{ polozka.nazev }}</a>{% endfor %}
+</div>
+{% if not menu %}<p class="poznamka">Obrazovky ostrovů přibudou ve fázi 3; do té doby se API zkouší ve Swaggeru nebo ve vývojářském panelu.</p>{% endif %}
+{% endblock %}

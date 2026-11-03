@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  HOUFEK Sklad – web.config pro IIS s HttpPlatformHandler (postup: docs/provoz.md, krok 3).
+  Zkopírujte do kořene aplikace jako web.config a upravte cesty.
+  Hesla sem NEPATŘÍ: konfigurace je v souboru, na který ukazuje HOUFEK_KONFIGURACE_SOUBOR.
+-->
+<configuration>
+  <system.webServer>
+    <handlers>
+      <add name="HoufekSklad" path="*" verb="*" modules="httpPlatformHandler" resourceType="Unspecified" />
+    </handlers>
+    <!-- IIS spustí waitress, předá mu port a po pádu ho znovu spustí.
+         requestTimeout musí být delší než limit dotazu aplikace (30 s). -->
+    <httpPlatform processPath="C:\houfek-sklad\app\.venv\Scripts\waitress-serve.exe"
+                  arguments="--host=127.0.0.1 --port=%HTTP_PLATFORM_PORT% --threads=16 --url-scheme=https --call app:create_app"
+                  startupTimeLimit="60"
+                  requestTimeout="00:01:00"
+                  processesPerApplication="1"
+                  stdoutLogEnabled="true"
+                  stdoutLogFile="C:\houfek-sklad\logy\stdout">
+      <environmentVariables>
+        <environmentVariable name="PYTHONPATH" value="C:\houfek-sklad\app" />
+        <environmentVariable name="HOUFEK_KONFIGURACE_SOUBOR" value="C:\houfek-sklad\konfigurace\houfek.env" />
+      </environmentVariables>
+    </httpPlatform>
+    <security>
+      <requestFiltering>
+        <!-- aplikace sama odmítne tělo nad 1 MB (PAYLOAD_TOO_LARGE); IIS je pojistka -->
+        <requestLimits maxAllowedContentLength="2097152" />
+      </requestFiltering>
+    </security>
+  </system.webServer>
+</configuration>
