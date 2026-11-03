@@ -4,7 +4,8 @@
 
 **Co je potřeba nejdřív:**
 - **Spustit integrační testy T-SQL** na testovacím SQL Serveru v Dockeru (TD-01).
-- **Ověřit první běh CI** (TD-02): workflow `.github/workflows/ci.yml` je hotový, ale zatím nikdo neběžel – bez push na GitHub to nejde.
+- **Dovést CI do zelené** (TD-02): repozitář je na GitHubu, běh #1 padl za 0 s na validaci workflowu (kontext `env` v `jobs.<id>.env`), opraveno. Chybí zelený běh #2.
+- **Rozhodnout, zda má být repozitář veřejný** (TD-26): `github.com/admplchmn/houfek_sklad` je public, tedy i rozbor firemního XLSM a zadání. Hesla v něm nejsou, ale obsah je firemní.
 
 Splaceno: TD-18, TD-19 (revize 26. 10.), TD-08, TD-09, TD-12, TD-15 (revize 1. 11.), TD-04 (3. 11., Docker), TD-11 (3. 11., UTC). TD-01 má hotový harness i testovací server, zbývá ho spustit.
 
@@ -27,7 +28,8 @@ Splaceno: TD-18, TD-19 (revize 26. 10.), TD-08, TD-09, TD-12, TD-15 (revize 1. 1
 | TD-04 | Chyběla testovací DB. Teď je testovací SQL Server v Dockeru: `docker-compose.yml`, `python -m nastroje.testovaci_db` založí `HoufekSklad_TEST` s RCSI a provede migrace. Provozní účty aplikace a migrace popisuje [provoz.md](provoz.md). | Infrastruktura | 5 | 4 | 1 | 45 | 0,5 d | Bez DB nejde spustit migrace ani T-SQL. | **splaceno 3. 11.** |
 | TD-01 | Integrační testy T-SQL proti SQL Serveru. Harness `tests/integrace` a 7 testů Platformy jsou hotové (migrace, pohledy, `v_KontrolaIntegrity`, chyba 1222, `requestId`). Zbývá je spustit na testovacím serveru v Dockeru (`docker compose up -d`, `python -m nastroje.over_vse`) a doplnit testy repozitářů C a E (`zamkni_mista` se souběhem, `vloz`, přesun A→B / B→A) (S-01) | Testy | 5 | 5 | 2 | **40** | 2–3 d (průběžně s repozitáři) | Zámky a migrace jsou dnes ověřené jen strukturálně. Chyba v nich = špatná zásoba nebo napůl provedená změna schématu. | teď; testy C a E s jejich fází 1 |
 | TD-03 | RCSI na provozní DB je ruční krok DBA (ADR-0005). Testovací DB v Dockeru ho má zapnutý od založení (3. 11.). | Infrastruktura | 3 | 4 | 1 | **35** | 0,1 d + okno údržby | Bez RCSI přehledy blokují terminály a obráceně. Skladník čeká na zámek kvůli obrazovce v kanceláři. | při zakládání provozní DB |
-| TD-02 | CI: workflow `.github/workflows/ci.yml` je hotový (předběžné kontroly + SQL Server 2022 s migracemi a T-SQL testy). Zatím neběhl ani jednou – bez push na GitHub se nedá ověřit; `CODEOWNERS` pořád jen jako příklad | Infrastruktura | 3 | 4 | 2 | **28** | 0,5 d na ověření prvního běhu | Pravidla P1–P4, P6 a P10 chrání jen tehdy, když běží automaticky na každý pull request. | první push + nastavený přístup k repozitáři |
+| TD-02 | CI: workflow `.github/workflows/ci.yml` je na GitHubu a poprvé se spustil. Běh #1 (`f1ce877`) padl před startem jobů – `${{ env.X }}` nesmí v `jobs.<id>.env` (kontejnery služeb startují dřív, než se vyhodnotí proměnné jobu). Opraveno, čeká se na běh #2; `CODEOWNERS` pořád jen jako příklad | Infrastruktura | 3 | 4 | 2 | **28** | 0,5 d na doladění do zelené | Pravidla P1–P4, P6 a P10 chrání jen tehdy, když běží automaticky na každý pull request. | teď; `Testy api.js` se v CI běží poprvé (lokalně bez Node.js se vynechávají) |
+| TD-26 | Repozitář `admplchmn/houfek_sklad` je na GitHubu **veřejný** (GitHub API odpoví i bez přihlášení). V tree nic citlivého není – `.env`, `ssh_to_git_push.txt` a soukromé klíče `git ls-files` neukazují – ale veřejné je zadání, rozbor firemního XLSM (`migrace-xlsm.md`) a kompletní kód | Infrastruktura | 4 | 5 | 1 | **60** | 0,1 d (přepnout na private, nebo to potvrdit) | Firemní data a postup skladu jsou čitelné komukoli. Hesla jsme nevyndali, ale i tohle je důsledek pushu, který je potřeba vědomě schválit. | rozhodne vedoucí + firma, než do toho začnou psát ostatní ostrovy |
 | TD-18 | Dokumenty „Analýza“ a „Ostrovy“ neodpovídaly kódu (8.1 SQLAlchemy/Alembic, chybějící kódy chyb, počty tabulek, pohledy) | Dokumentace | 3 | 3 | 1 | 30 | 0,5 d | Programátor podle dokumentu napíše jiný kód, než Platforma umí. | **splaceno 26. 10.** |
 | TD-19 | Kostry rozhraní vracejí vzorová data i v provozu | Kód | 2 | 4 | 1 | 30 | 0,25 d | Terminál by ukázal vymyšlenou zásobu jako skutečnou. Teď v provozním režimu selže (`app/platforma/kostra.py`). | **splaceno 26. 10.** |
 | TD-25 | `InventuraPolozka.PosledniPohybID` ve schématu chybí (D8, S-19); stav položky CEKA / ZAPSANO / PREPOCITAT se z něj odvozuje | Schéma | 2 | 4 | 1 | **30** | 0,25 d (migrace) | Bez něj inventura nepozná, že se pozice od zápisu změnila, a zaúčtuje rozdíl proti cizímu stavu. | po rozhodnutí Q-16, před fází 1 ostrova F |
@@ -66,7 +68,7 @@ Pravidlo: **~15 % kapacity každého sprintu** jde na dluh. Položky Platformy n
 
 | Kdy | Položky | Podmínka splnění |
 |---|---|---|
-| **Teď (fáze 0 → 1)** | TD-01 (spustit), TD-05, TD-02 (ověřit první běh CI) | `python -m nastroje.testovaci_db` a `over_vse` projdou na testovacím serveru v Dockeru; CI zelené na prvním pull requestu |
+| **Teď (fáze 0 → 1)** | TD-26 (veřejný repozitář), TD-01 (spustit), TD-05, TD-02 (doladit CI do zelené) | `python -m nastroje.testovaci_db` a `over_vse` projdou na testovacím serveru v Dockeru; CI zelené na prvním pull requestu |
 | **Fáze 1, před 1. zápisem pohybu (E)** | TD-01 (testy C a E proti `HoufekSklad_TEST`), TD-24, TD-25 (po Q-16) | integrační vrstva běží v CI nebo ručně proti `HoufekSklad_TEST` v Dockeru; dvojklik nezaloží dva boxy |
 | **Fáze 1, s ostrovem B** | TD-07 (čeká na Q-33), TD-06 (čeká na Q-34) | přihlášení PINem se zámkem; limit nečinnosti rozhodnutý a nastavený |
 | **Brána K3 (backend hotový, souběhové testy G3)** | TD-01 (testy E: souběh, `requestId`) | souběžné testy přesunů A→B / B→A bez deadlocku |

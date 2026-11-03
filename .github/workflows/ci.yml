@@ -43,27 +43,34 @@ jobs:
   integrace-tsql:
     name: Integrační testy (SQL Server 2022)
     runs-on: ubuntu-latest
+    # Heslo DO CHVILKOVÉHO KONTEJNERU, ne k databázi: kontejner žije jen po dobu jobu, nikdo se k
+    # němu zvenčí nepřipojí (běží na runneru) a nevznikají v něm žádná reálná data. Proto smí stát
+    # v repozitáři – AGENTS.md zakazuje hesla přístupová (AGENTS.md „Hesla a přístupy…“).
+    #
+    # Je tu dvakrát doslova, jednou ho nejde sdílet: kontejnery služeb startují dřív, než se
+    # vyhodnotí proměnné jobu, a YAML kotvy GitHub Actions nepodporuje. Podruhé jako
+    # ${{ secrets.HOUFEK_TEST_DB_HESLO }} by to bylo na jedno místo a veřejnému repozitáři líp
+    # (Q-36) – chce to ale vytvořit secret v nastavení repozitáře, jinak job spadne na prázdném
+    # hesle a SQL Server odmítne nastartovat.
     services:
       sqlserver:
         image: mcr.microsoft.com/mssql/server:2022-latest
         env:
           ACCEPT_EULA: "Y"
           MSSQL_PID: Developer
-          MSSQL_SA_PASSWORD: ${{ env.CI_TEST_HESLO }}
+          MSSQL_SA_PASSWORD: HoufekTest2026
         ports:
           - "1433:1433"
         # Bez --health-cmd: kontrola připravenosti by závisela na tom, v kterém adresáři je zrovna
         # sqlcmd (/opt/mssql-tools vs. /opt/mssql-tools18). Krok „Počkat“ níž používá pyodbc,
         # který máme stejně nainstalovaný pro aplikaci, a řekne to samé.
     env:
-      # Jednorázové heslo kontejneru, který žije jen po dobu běhu jobu a nevznikají v něm žádná
-      # reálná data. Není to heslo žádné skutečné databáze – proto smí být v repozitáři
-      # (AGENTS.md zakazuje hesla přístupová, ne heslo do chvilkového kontejneru v CI).
-      CI_TEST_HESLO: "HoufekTest2026"
+      # Appka i harness čtou HOUFEK_TEST_DB_* (tests/integrace/zaklad.py); heslo je totéž co
+      # MSSQL_SA_PASSWORD výše.
       HOUFEK_TEST_DB_SERVER: localhost,1433
       HOUFEK_TEST_DB_NAZEV: HoufekSklad_TEST
       HOUFEK_TEST_DB_UZIVATEL: sa
-      HOUFEK_TEST_DB_HESLO: ${{ env.CI_TEST_HESLO }}
+      HOUFEK_TEST_DB_HESLO: HoufekTest2026
       HOUFEK_TEST_DB_DUVEROVAT_CERTIFIKATU: "1"
     steps:
       - uses: actions/checkout@v4
@@ -86,7 +93,7 @@ jobs:
           import pyodbc
 
           retezec = ("DRIVER={ODBC Driver 18 for SQL Server};SERVER=localhost,1433;DATABASE=master;"
-                     "UID=sa;PWD=" + os.environ["CI_TEST_HESLO"] + ";Encrypt=yes;TrustServerCertificate=yes;")
+                     "UID=sa;PWD=" + os.environ["HOUFEK_TEST_DB_HESLO"] + ";Encrypt=yes;TrustServerCertificate=yes;")
           for _ in range(60):
               try:
                   pyodbc.connect(retezec, timeout=5).close()

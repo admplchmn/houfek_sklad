@@ -15,7 +15,7 @@ Technologie: Flask + Microsoft SQL Server. Aplikace je jeden celek rozdělený n
 - Projekt je zkontrolovaný proti obrázkům zadání kap. 5–21 ([kontrolní seznam](docs/soulad-se-zadanim.md)).
 - Snímek kontraktů v `kontrakty/` je kandidát pro bránu K1. Do zmrazení ho smí přeuložit jen P1, potom se kontrakty jen přidávají.
 - Migrace 001–004 jsou připravené. Spustí je testovací SQL Server v Dockeru (`docker-compose.yml`), zatím je ověřil jen statický rozbor.
-- CI je připravené (`.github/workflows/ci.yml`): předběžné kontroly a druhý job s SQL Serverem 2022. Zelené potvrdí první push – doposud neběhalo nic.
+- CI běží na GitHub Actions (`.github/workflows/ci.yml`): předběžné kontroly a druhý job s SQL Serverem 2022. První běh padl na validaci workflowu, opraveno – zelenou zatím nemáme.
 - Čas se ukládá v **UTC** (`DATETIME2`, `SYSUTCDATETIME()`, `platforma.kontrakty.teď()`), najevo jde pražský čas. Rozhodnutí vedoucího 3. 11., splácí TD-11.
 - Další krok: fáze 1 podle [rozdělení práce](docs/rozdeleni-prace.md). Pravidla pro programátory i AI agenty jsou v [AGENTS.md](AGENTS.md).
 
