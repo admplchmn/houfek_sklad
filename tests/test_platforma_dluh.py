@@ -8,7 +8,7 @@ from unittest import mock
 
 import click
 
-from app.ostrovy import OSTROVY
+from app.ostrovy import OSTROVY, _sablona
 from app.platforma import migrace_db, vytvor_aplikaci
 from app.platforma.db import cteni
 from app.platforma.konfigurace import Konfigurace
@@ -91,20 +91,25 @@ class TestZamekUpgradu(unittest.TestCase):
 
 
 class TestKostraBezDatabaze(unittest.TestCase):
-    """Vývoj bez HOUFEK_DB_SERVER: aplikace naběhne nad dočasnou sqlite a kostra jde proklikat (TD-04)."""
+    """Vývoj bez HOUFEK_DB_SERVER: aplikace naběhne nad dočasnou sqlite a kostra jde proklikat (TD-04).
+
+    Ověřuje se Platforma a šablona ostrova – jen jejich tabulky v sqlite kostry jsou. Ostrovy s
+    hotovou fází 1 čtou nad SQL Serverem (docs/vyvoj.md, sekce 1.1), proto se tu nevolají.
+    """
 
     def test_aplikace_bez_db_obslouzi_cteni_i_skladovy_prikaz(self):
-        app = vytvor_aplikaci(OSTROVY, Konfigurace(vyvoj=True))
+        app = vytvor_aplikaci([*OSTROVY, _sablona.OSTROV], Konfigurace(vyvoj=True))
         try:
             klient = app.test_client()
             self.assertEqual(klient.post("/api/system/vyvojove-prihlaseni", json={
                 "uzivatelId": 1, "kodRole": "ADMIN"}).status_code, 200)
-            self.assertEqual(klient.get("/api/struktura/boxy/37").json["code"], "OK")
             self.assertEqual(klient.get("/api/system/zdravi").json["data"]["databaze"], "KOSTRA")
-            odpoved = klient.post("/api/struktura/blokace", json={"requestId": rid(), "kod": "BPLE037",
-                                                                    "blokovat": True, "duvod": "zkouška kostry"})
+            odpoved = klient.post("/api/sablona/polozky", json={"requestId": rid(), "kod": "SBL037",
+                                                                "pocetKs": 30})
             self.assertEqual(odpoved.json["code"], "OK")
             self.assertIsNotNone(odpoved.json["transakceId"])
+            polozka_id = odpoved.json["data"]["polozkaId"]
+            self.assertEqual(klient.get(f"/api/sablona/polozky/{polozka_id}").json["data"]["kod"], "SBL037")
         finally:
             app.extensions["houfek_kostra_db"].smaz()
 
