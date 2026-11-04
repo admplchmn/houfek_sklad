@@ -50,6 +50,7 @@ Podrobný postup, běh aplikace nad databází a vývojový uživatel: [docs/vyv
 | Dokument | Pro koho | Obsah |
 |---|---|---|
 | [AGENTS.md](AGENTS.md) | programátoři, AI agenti | závazná pravidla práce a psaní kódu, hranice ostrova, odevzdání (`CLAUDE.md` ho načte agentovi Claude Code) |
+| [docs/agenti.md](docs/agenti.md) | vedoucí, dispečer v Projektu, agenti | souběžná práce agentů, šablona zadání, instrukce pro Projekt, nastavení GitHubu |
 | [docs/rozdeleni-prace.md](docs/rozdeleni-prace.md) | vedoucí, programátoři, agenti | krok 0, kdo dělá který ostrov, jak pracovat nezávisle, zadání fáze 1, scénáře T01–T33 |
 | [docs/vyvoj.md](docs/vyvoj.md) | programátoři | prostředí, struktura ostrova, běžné úkoly krok za krokem, pravidla P1–P11, koho se ptát |
 | [docs/architektura.md](docs/architektura.md) | všichni | požadavky a odhad zátěže, komponenty, tok příkazu, chyby a opakování, spolehlivost, kompromisy |
