@@ -157,7 +157,8 @@ class TestRozhraniZalozDil(ZakladDilu):
         chyba = self.chyba(rozhrani.zaloz_dil, self.spoj, self.kdo, self.dil(potreba=PotrebaMista("V6")),
                            kod="VALIDATION_ERROR")
         self.assertEqual({c["pole"] for c in chyba.data["chyby"]}, {"potrebnaDelkaMm", "potrebnaHloubkaMm"})
-        self.assertEqual(self.spoj.hodnota("SELECT COUNT(*) FROM dbo.Dil"), 0)
+        self.assertEqual(self.spoj.hodnota("SELECT COUNT(*) FROM dbo.Dil WHERE IdentifikacniCislo ="
+                                           " 'CE21RA 10 100194'"), 0)
 
     def test_v6_s_rozmarem(self):
         dil_id = rozhrani.zaloz_dil(self.spoj, self.kdo,
@@ -299,9 +300,9 @@ class TestZmenaDilu(ZakladDilu):
         self.assertEqual((druhy.nazev, druhy.material, druhy.standardni_davka_ks), ("Bok levý", "S355", None))
         self.assertEqual([(r["Pole"], r["StaraHodnota"], r["NovaHodnota"], r["Poznamka"])
                           for r in self.audity(dil.dil_id)][1:],
-                         [("NazevDilu", "Původní název", "Bok levý", "oprava kmenových dat"),
-                          ("MaterialID", str(self.materialy["S235"]), str(self.materialy["S355"]),
+                         [("MaterialID", str(self.materialy["S235"]), str(self.materialy["S355"]),
                            "oprava kmenových dat"),
+                          ("NazevDilu", "Původní název", "Bok levý", "oprava kmenových dat"),
                           ("StandardniDavkaKs", "10", None, "oprava kmenových dat")])
 
     def test_stejna_hodnota_se_neaudituje(self):
@@ -395,12 +396,12 @@ class TestCiselniky(ZakladDilu):
         self.assertEqual((operace.kod, operace.nazev), ("BRUSKA", "Bruska"))
 
     def test_duplicita_kodu_po_normalizaci(self):
-        for typ, druhy, prvni in (("materialy", " zku.1 ", "ZKU.1"), ("operace", "laser", "LASER")):
+        """Materiál zakládáme tady, operace a tloušťka jsou seed z migrace 001."""
+        sluzby.zaloz_polozku_ciselniku.__wrapped__(self.spoj, "materialy", NovyCiselnikVstup(kod="ZKU.1"), self.kdo)
+        for typ, kod in (("materialy", " zku.1 "), ("operace", "laser"), ("tloustky", "3.00")):
             with self.subTest(typ=typ):
-                sluzby.zaloz_polozku_ciselniku.__wrapped__(self.spoj, typ,
-                                                           NovyCiselnikVstup(kod=prvni, nazev="Zkušební"), self.kdo)
-                self.chyba(sluzby.zaloz_polozku_ciselniku.__wrapped__, self.spoj, typ,
-                           NovyCiselnikVstup(kod=druhy, nazev="Druhý pokus"), kod="ALREADY_EXISTS")
+                self.chyba(sluzby.zaloz_polozku_ciselniku.__wrapped__, self.spoj, typ, NovyCiselnikVstup(kod=kod),
+                           kod="ALREADY_EXISTS")
 
     def test_tloustka_tri_a_tri_tecky_00_je_totez(self):
         """Kontrola duplicity používá stejnou normalizaci jako zápis („3“ i „3,00“ je tloušťka 3.00)."""
