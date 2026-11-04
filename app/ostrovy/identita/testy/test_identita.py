@@ -1,4 +1,8 @@
-"""Testy ostrova B: čistá pravidla (hotová) a HTTP kontrakt nad vzorovými daty (kostra fáze 0)."""
+"""Testy ostrova B: čistá pravidla a chyby, které ostrov pozná bez databáze (400, 401, 403).
+
+Data z SQL Serveru (přihlášení, správa uživatelů, rolí a terminálů) testuje
+`test_identita_sql.py` – T-SQL se testuje proti skutečnému serveru (docs/adr/0009).
+"""
 import importlib.util
 import unittest
 
@@ -38,6 +42,11 @@ class TestPravidla(unittest.TestCase):
         self.assertEqual(chybna_pole(domena.over_deaktivaci, 2, 2), set())
         domena.over_deaktivaci(3, 2)
 
+    def test_posledni_spravce(self):
+        domena.over_posledniho_spravce(2)          # vyřadit lze, jeden zůstane
+        self.assertEqual(chybna_pole(domena.over_posledniho_spravce, 1), set())
+        self.assertEqual(chybna_pole(domena.over_posledniho_spravce, 0), set())
+
     @unittest.skipUnless(MA_ARGON2, "argon2-cffi není nainstalované (requirements.txt)")
     def test_hash_pinu(self):
         pin_hash = domena.zahashuj_pin("1234")
@@ -49,111 +58,36 @@ class TestPravidla(unittest.TestCase):
         self.assertFalse(domena.pin_sedi("1234", "neplatny-hash"))
 
 
-class TestPrihlaseni(ZakladTestuOstrova):
+class TestChybyBezDatabaze(ZakladTestuOstrova):
+    """Chyby, které ostrov pozná dřív, než sáhne do tabulek: formát vstupu a oprávnění."""
+
     ostrovy = (identita.OSTROV,)
 
-    def prihlaseni(self, cislo, pin, terminal=None):
-        telo = {"osobniCislo": cislo, "pin": pin}
-        if terminal:
-            telo["kodTerminalu"] = terminal
-        return self.klient.post("/api/identita/prihlaseni", json=telo)
-
-    def test_uspesne_prihlaseni_a_ja(self):
-        data = self.over_ok(self.prihlaseni("1001", "1234", "pda-01"))
-        self.assertEqual((data["celeJmeno"], data["kodRole"], data["kodTerminalu"], data["pracovisteId"]),
-                         ("Jan Novák", "SKL", "PDA-01", 1))
-        self.assertIn("SKLAD_VYDEJ", data["opravneni"])
-        ja = self.over_ok(self.klient.get("/api/identita/ja"))
-        self.assertEqual((ja["uzivatelId"], ja["terminalId"]), (1, 1))
-        self.assertFalse({"pin", "pinHash", "kodKarty"} & set(ja))
-
-    def test_chyba_neprozradi_proc(self):
-        zpravy = set()
-        for cislo, pin in [("1001", "9999"), ("9999", "1234"), ("1003", "1111"), ("1004", ""), ("Nov ák", "1")]:
-            obalka = self.over_chybu(self.prihlaseni(cislo, pin or "0"), 401, "NOT_AUTHENTICATED")
-            zpravy.add(obalka["message"])
-            self.assertIsNone(obalka["data"])
-        self.assertEqual(zpravy, {"Neplatné osobní číslo nebo PIN."})
+    def test_neprihlaseny_se_nedostane_daleko(self):
         self.over_chybu(self.klient.get("/api/identita/ja"), 401, "NOT_AUTHENTICATED")
-
-    def test_terminal_a_odhlaseni(self):
-        self.assertEqual(self.chybna_pole(self.prihlaseni("1001", "1234", "PDA-09")), {"kodTerminalu"})
-        self.over_ok(self.prihlaseni("1001", "1234"))
-        self.over_ok(self.klient.post("/api/identita/odhlaseni"))
-        self.over_chybu(self.klient.get("/api/identita/ja"), 401, "NOT_AUTHENTICATED")
-        self.over_ok(self.klient.post("/api/identita/odhlaseni"))     # bez přihlášení nic nevadí
-
-    def test_vyrazeny_uzivatel_prijde_o_session(self):
-        self.prihlas("DIL_CIST", uzivatel_id=3)                         # 1003 je ve vzorových datech vyřazený
-        obalka = self.over_chybu(self.klient.get("/api/identita/ja"), 401, "NOT_AUTHENTICATED")
-        self.assertIn("už neplatí", obalka["message"])
-
-
-class TestSprava(ZakladTestuOstrova):
-    ostrovy = (identita.OSTROV,)
-
-    def setUp(self):
-        super().setUp()
-        self.prihlas("UZIVATEL_EDIT", uzivatel_id=2)
-
-    def test_seznam_bez_tajemstvi(self):
-        data = self.over_ok(self.klient.get("/api/identita/uzivatele"))
-        self.assertEqual(data["celkem"], 3)                              # vyřazený 1003 ve výchozím filtru není
-        self.assertEqual(self.over_ok(self.klient.get("/api/identita/uzivatele?aktivni=&hledat=dvořák"))["celkem"], 1)
-        klice = set(data["polozky"][0])
-        self.assertTrue({"maPin", "maKartu"} <= klice)
-        self.assertFalse({"pin", "pinHash", "kodKarty"} & klice)
-
-    def test_zalozeni_a_zmena(self):
-        novy = self.over_ok(self.klient.post("/api/identita/uzivatele", json={
-            "osobniCislo": " 2001 ", "jmeno": "Ivana", "prijmeni": "Horáková", "roleId": 1, "pin": "2468"}))
-        self.assertEqual((novy["osobniCislo"], novy["kodRole"], novy["maPin"]), ("2001", "OPER", True))
-        self.over_chybu(self.klient.post("/api/identita/uzivatele", json={
-            "osobniCislo": "1001", "jmeno": "X", "prijmeni": "Y", "roleId": 1}), 409, "ALREADY_EXISTS")
-        self.assertEqual(self.chybna_pole(self.klient.post("/api/identita/uzivatele", json={
-            "osobniCislo": "2002", "jmeno": "X", "prijmeni": "Y", "roleId": 1, "pin": "12"})), {"pin"})
-        zmena = self.over_ok(self.klient.patch("/api/identita/uzivatele/1", json={
-            "prijmeni": "Nový", "roleId": 3, "kodKarty": "04A2B9", "duvod": "povýšení na mistra"}))
-        self.assertEqual((zmena["celeJmeno"], zmena["kodRole"], zmena["maKartu"]), ("Jan Nový", "MISTR", True))
-        self.assertEqual(self.chybna_pole(self.klient.patch("/api/identita/uzivatele/1", json={
-            "roleId": None, "duvod": "oprava"})), {"roleId"})
-
-    def test_deaktivace_a_pin(self):
-        self.assertFalse(self.over_ok(self.klient.post("/api/identita/uzivatele/1/deaktivovat",
-                                                       json={"duvod": "odchod z firmy"}))["aktivni"])
-        self.over_chybu(self.klient.post("/api/identita/uzivatele/2/deaktivovat", json={"duvod": "omyl"}),
-                        400, "VALIDATION_ERROR")
-        self.assertTrue(self.over_ok(self.klient.post("/api/identita/uzivatele/4/reset-pinu",
-                                                      json={"novyPin": "13579", "duvod": "nový PIN"}))["maPin"])
-        self.assertEqual(self.chybna_pole(self.klient.post("/api/identita/uzivatele/4/reset-pinu",
-                                                           json={"novyPin": "abc", "duvod": "nový PIN"})), {"novyPin"})
-
-    def test_role(self):
-        role = self.over_ok(self.klient.get("/api/identita/role"))["polozky"]
-        self.assertEqual([r["kodRole"] for r in role], ["OPER", "SKL", "MISTR", "TECH", "ADMIN"])
-        zmena = self.over_ok(self.klient.patch("/api/identita/role/1", json={
-            "opravneni": ["dil_cist", "SKLAD_PRIJEM"], "duvod": "bez výdeje"}))
-        self.assertEqual(zmena["opravneni"], ["DIL_CIST", "SKLAD_PRIJEM"])
-        self.assertEqual(self.chybna_pole(self.klient.patch("/api/identita/role/5", json={
-            "opravneni": ["DIL_CIST"], "duvod": "test"})), {"opravneni"})
-        self.assertEqual(self.chybna_pole(self.klient.patch("/api/identita/role/1", json={
-            "opravneni": ["LETAT"], "duvod": "test"})), {"opravneni"})
-        obalka = self.over_chybu(self.klient.patch("/api/identita/role/1", json={
-            "opravneni": ["DIL_CIST"] * 101, "duvod": "test"}), 400, "VALIDATION_ERROR")
-        self.assertEqual(obalka["data"]["chyby"][0]["zprava"], "Nejvýše 100 položek.")
-
-    def test_terminaly(self):
-        self.assertEqual(len(self.over_ok(self.klient.get("/api/identita/terminaly"))["polozky"]), 3)
-        self.assertEqual(self.over_ok(self.klient.post("/api/identita/terminaly", json={
-            "kodTerminalu": "pda-03", "pracovisteId": 3}))["kodTerminalu"], "PDA-03")
-        self.over_chybu(self.klient.post("/api/identita/terminaly", json={"kodTerminalu": "PDA-01"}),
-                        409, "ALREADY_EXISTS")
-        self.assertTrue(self.over_ok(self.klient.patch("/api/identita/terminaly/3", json={
-            "aktivni": True, "duvod": "opravené PDA"}))["aktivni"])
+        self.over_chybu(self.klient.get("/api/identita/uzivatele"), 401, "NOT_AUTHENTICATED")
+        self.over_ok(self.klient.post("/api/identita/odhlaseni"))     # odhlásit se dá i bez přihlášení
 
     def test_bez_opravneni(self):
         self.prihlas("DIL_CIST", uzivatel_id=1)
-        self.over_chybu(self.klient.get("/api/identita/uzivatele"), 403, "NO_PERMISSION")
+        for cesta in ("/api/identita/uzivatele", "/api/identita/role", "/api/identita/terminaly"):
+            self.over_chybu(self.klient.get(cesta), 403, "NO_PERMISSION")
+
+    def test_spatny_vstup_se_odmi_drive_nez_z_dotazu(self):
+        self.prihlas("UZIVATEL_EDIT", uzivatel_id=2)
+        self.assertEqual(self.chybna_pole(self.klient.post("/api/identita/uzivatele", json={
+            "osobniCislo": "2002", "jmeno": "X", "prijmeni": "Y", "roleId": 1, "pin": "12"})), {"pin"})
+        self.assertEqual(self.chybna_pole(self.klient.post("/api/identita/uzivatele", json={
+            "osobniCislo": "2002", "jmeno": "X", "prijmeni": "Y", "roleId": 1, "novyPin": "1234"})), {"novyPin"})
+        self.assertEqual(self.chybna_pole(self.klient.patch("/api/identita/uzivatele/1", json={
+            "roleId": None, "duvod": "oprava"})), {"roleId"})
+        self.assertEqual(self.chybna_pole(self.klient.patch("/api/identita/role/1", json={
+            "nazev": None, "duvod": "test"})), {"nazev"})
+        self.assertEqual(self.chybna_pole(self.klient.post("/api/identita/prihlaseni", json={
+            "osobniCislo": "1001", "pin": ""})), {"pin"})
+        obalka = self.over_chybu(self.klient.patch("/api/identita/role/1", json={
+            "opravneni": ["DIL_CIST"] * 101, "duvod": "test"}), 400, "VALIDATION_ERROR")
+        self.assertEqual(obalka["data"]["chyby"][0]["zprava"], "Nejvýše 100 položek.")
 
 
 if __name__ == "__main__":
