@@ -26,7 +26,8 @@ Všechny ostrovy jsou zapojené už teď (`app/ostrovy/__init__.py`). Když nezm
 
 ## Práce a odevzdání
 
-- Jedna větev na ostrov: `ostrov/<ostrov>`. Agenti na jednom PC pracují každý ve vlastním `git worktree`.
+- Jeden úkol = jedna větev `ostrov/<složka>/<popis>` od `origin/main` = jeden pull request; do jednoho ostrova píše vždy jen jeden agent. Nikdy `git push origin main`. Postup a šablona zadání: [docs/agenti.md](docs/agenti.md).
+- CI na každý push kontroluje i hranice ostrova (`python -m nastroje.hranice_ostrova <větev>`). Agenti na jednom PC pracují každý ve vlastním `git worktree`.
 - Před odevzdáním spusť `python -m nastroje.over_vse`. Musí skončit „Všechny kontroly prošly.“
 - Pull request schvaluje vlastník složky. Změny `rozhrani.py`, `kontrakty.py`, pohledů a migrací navíc schvaluje P1.
 - Hotovo je, když:
