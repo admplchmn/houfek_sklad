@@ -342,12 +342,13 @@ class TestZmenaVelikosti(ZakladDilu):
                               potrebna_delka_mm=Decimal("800"), potrebna_hloubka_mm=Decimal("400.5"))
         self.assertEqual((druhy.velikost, druhy.potrebna_delka_mm, druhy.potrebna_hloubka_mm),
                          ("V6", Decimal("800.00"), Decimal("400.50")))
+        # audit ukládá hodnotu tak, jak ji poslal klient (800), v tabulce je DECIMAL(10,2) tedy 800.00
         self.assertEqual([(r["Pole"], r["StaraHodnota"], r["NovaHodnota"], r["Poznamka"])
                           for r in self.audity(dil.dil_id)][1:],
                          [("VelikostPoziceID", str(self.velikosti["V1"]), str(self.velikosti["V6"]),
                            "nový přípravek"),
-                          ("PotrebnaDelkaMM", None, "800.00", "nový přípravek"),
-                          ("PotrebnaHloubkaMM", None, "400.50", "nový přípravek")])
+                          ("PotrebnaDelkaMM", None, "800", "nový přípravek"),
+                          ("PotrebnaHloubkaMM", None, "400.5", "nový přípravek")])
 
     def test_stejna_velikost_se_neaudituje(self):
         dil = self.zaloz("ZKVEL 2", velikost_pozice_id=self.velikosti["V2"])
