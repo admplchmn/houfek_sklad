@@ -398,12 +398,18 @@ class TestCiselniky(ZakladDilu):
         self.assertEqual((operace.kod, operace.nazev), ("BRUSKA", "Bruska"))
 
     def test_duplicita_kodu_po_normalizaci(self):
-        """Materiál zakládáme tady, operace a tloušťka jsou seed z migrace 001."""
+        """Materiál zakládáme tady, operace a tloušťka jsou seed z migrace 001.
+
+        Operace posílá i název – bez něj služba skončí na ověření vstupu, czyli
+        VALIDATION_ERROR dřív, než se dostane ke kontrole duplicity.
+        """
         sluzby.zaloz_polozku_ciselniku.__wrapped__(self.spoj, "materialy", NovyCiselnikVstup(kod="ZKU.1"), self.kdo)
-        for typ, kod in (("materialy", " zku.1 "), ("operace", "laser"), ("tloustky", "3.00")):
-            with self.subTest(typ=typ):
-                self.chyba(sluzby.zaloz_polozku_ciselniku.__wrapped__, self.spoj, typ,
-                           NovyCiselnikVstup(kod=kod), self.kdo, kod="ALREADY_EXISTS")
+        for typ, vstup in (("materialy", NovyCiselnikVstup(kod=" zku.1 ")),
+                           ("tloustky", NovyCiselnikVstup(kod="3.00")),
+                           ("operace", NovyCiselnikVstup(kod="laser", nazev="Řezání laserem"))):
+            with self.subTest(typ=typ, kod=vstup.kod):
+                self.chyba(sluzby.zaloz_polozku_ciselniku.__wrapped__, self.spoj, typ, vstup, self.kdo,
+                           kod="ALREADY_EXISTS")
 
     def test_tloustka_tri_a_tri_tecky_00_je_totez(self):
         """Kontrola duplicity používá stejnou normalizaci jako zápis („3“ i „3,00“ je tloušťka 3.00)."""
