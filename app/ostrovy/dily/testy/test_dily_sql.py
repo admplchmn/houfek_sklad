@@ -206,13 +206,14 @@ class TestSeznamADetail(ZakladDilu):
                 self.assertEqual(stranka.celkem, len(ocekavani))
 
     def test_strankovani(self):
-        self.assertEqual(([d.identifikacni_cislo for d in self.stranka(hledat="ZKSTR", velikost=2).polozky],
-                          self.stranka(hledat="ZKSTR", velikost=2, strana=2).celkem),
+        """Prázdné `aktivni` bere i vyřazený ZKSTR 4, aby druhá strana měla co zobrazit."""
+        filtr = {"hledat": "ZKSTR", "aktivni": None, "velikost": 2}
+        self.assertEqual(([d.identifikacni_cislo for d in self.stranka(**filtr).polozky],
+                          self.stranka(strana=2, **filtr).celkem),
                          (["ZKSTR 1", "ZKSTR 2"], 4))
-        self.assertEqual([d.identifikacni_cislo for d in self.stranka(hledat="ZKSTR", velikost=2,
-                                                                     strana=2).polozky],
+        self.assertEqual([d.identifikacni_cislo for d in self.stranka(strana=2, **filtr).polozky],
                          ["ZKSTR 3", "ZKSTR 4"])
-        stranka = self.stranka(hledat="ZKSTR", velikost=2, strana=3)
+        stranka = self.stranka(strana=3, **filtr)
         self.assertEqual((stranka.polozky, stranka.celkem, stranka.strana, stranka.velikost), ([], 4, 3, 2))
 
     def test_voditko_v_hledani_je_text(self):
@@ -323,7 +324,7 @@ class TestZmenaDilu(ZakladDilu):
         self.assertEqual([(r["Pole"], r["StaraHodnota"], r["NovaHodnota"], r["Poznamka"])
                           for r in self.audity(dil.dil_id)][1:], [("Aktivni", "1", "0", "konec výroby")])
         self.chyba(sluzby.deaktivuj_dil.__wrapped__, self.spoj, 2_000_000_000, DuvodVstup(duvod="konec"),
-                   kod="NOT_FOUND")
+                   self.kdo, kod="NOT_FOUND")
 
     def test_dil_s_obsahem_nejde_vyradit(self):
         for typ_boxu in ("DYN", "STAT"):
@@ -401,24 +402,24 @@ class TestCiselniky(ZakladDilu):
         sluzby.zaloz_polozku_ciselniku.__wrapped__(self.spoj, "materialy", NovyCiselnikVstup(kod="ZKU.1"), self.kdo)
         for typ, kod in (("materialy", " zku.1 "), ("operace", "laser"), ("tloustky", "3.00")):
             with self.subTest(typ=typ):
-                self.chyba(sluzby.zaloz_polozku_ciselniku.__wrapped__, self.spoj, typ, NovyCiselnikVstup(kod=kod),
-                           kod="ALREADY_EXISTS")
+                self.chyba(sluzby.zaloz_polozku_ciselniku.__wrapped__, self.spoj, typ,
+                           NovyCiselnikVstup(kod=kod), self.kdo, kod="ALREADY_EXISTS")
 
     def test_tloustka_tri_a_tri_tecky_00_je_totez(self):
         """Kontrola duplicity používá stejnou normalizaci jako zápis („3“ i „3,00“ je tloušťka 3.00)."""
         for kod in ("3", "3,00", " 3.00 "):
             with self.subTest(kod=kod):
                 self.chyba(sluzby.zaloz_polozku_ciselniku.__wrapped__, self.spoj, "tloustky",
-                           NovyCiselnikVstup(kod=kod), kod="ALREADY_EXISTS")
+                           NovyCiselnikVstup(kod=kod), self.kdo, kod="ALREADY_EXISTS")
 
     def test_validace_kodu_a_nazvu(self):
         for typ, vstup in (("tloustky", NovyCiselnikVstup(kod="0")), ("operace", NovyCiselnikVstup(kod="bruska")),
                            ("materialy", NovyCiselnikVstup(kod="ZKU2", nazev="Ocel"))):
             with self.subTest(typ=typ, kod=vstup.kod):
-                self.chyba(sluzby.zaloz_polozku_ciselniku.__wrapped__, self.spoj, typ, vstup,
+                self.chyba(sluzby.zaloz_polozku_ciselniku.__wrapped__, self.spoj, typ, vstup, self.kdo,
                            kod="VALIDATION_ERROR")
-        self.chyba(sluzby.zaloz_polozku_ciselniku.__wrapped__, self.spoj, "barvy", NovyCiselnikVstup(kod="RAL"),
-                   kod="NOT_FOUND")
+        self.chyba(sluzby.zaloz_polozku_ciselniku.__wrapped__, self.spoj, "barvy",
+                   NovyCiselnikVstup(kod="RAL"), self.kdo, kod="NOT_FOUND")
 
     def test_zmena_kodu_a_nazvu_audituje(self):
         operace = sluzby.zaloz_polozku_ciselniku.__wrapped__(self.spoj, "operace",
@@ -433,9 +434,9 @@ class TestCiselniky(ZakladDilu):
                          [("KodOperace", "ZKOPER", "ZKOPER2", "přejmenování"),
                           ("NazevOperace", "Původní", "Druhý název", "přejmenování")])
         self.chyba(sluzby.zmen_polozku_ciselniku.__wrapped__, self.spoj, "operace", operace.id,
-                   ZmenaCiselnikuVstup(duvod="srazka", kod="laser"), kod="ALREADY_EXISTS")
+                   ZmenaCiselnikuVstup(duvod="srazka", kod="laser"), self.kdo, kod="ALREADY_EXISTS")
         self.chyba(sluzby.zmen_polozku_ciselniku.__wrapped__, self.spoj, "operace", operace.id,
-                   ZmenaCiselnikuVstup(duvod="vymazani", nazev=None), kod="VALIDATION_ERROR")
+                   ZmenaCiselnikuVstup(duvod="vymazani", nazev=None), self.kdo, kod="VALIDATION_ERROR")
 
     def test_stejna_hodnota_se_neaudituje_a_nezname_id(self):
         material = self.material("ZKSTEJNA")
@@ -443,7 +444,7 @@ class TestCiselniky(ZakladDilu):
                                                   ZmenaCiselnikuVstup(duvod="kontrola", kod="zkstejna"), self.kdo)
         self.assertEqual(self.audity(material.id, "MATERIAL"), [])
         self.chyba(sluzby.zmen_polozku_ciselniku.__wrapped__, self.spoj, "materialy", 2_000_000_000,
-                   ZmenaCiselnikuVstup(duvod="kontrola", kod="X"), kod="NOT_FOUND")
+                   ZmenaCiselnikuVstup(duvod="kontrola", kod="X"), self.kdo, kod="NOT_FOUND")
 
     def test_deaktivace_položky(self):
         """Vyřazená položka zůstane u existujících dílů; služba ji zkontrolovala na existenci, ne na Aktivni."""
@@ -456,7 +457,7 @@ class TestCiselniky(ZakladDilu):
         dil = self.zaloz("ZKVYRITY", material_id=material.id)
         self.assertEqual(self.zmen(dil.dil_id, duvod="oprava", nazev="Bok levý").material, "ZKVYR")
         self.chyba(sluzby.deaktivuj_polozku_ciselniku.__wrapped__, self.spoj, "materialy", 2_000_000_000,
-                   DuvodVstup(duvod="nepoužívá se"), kod="NOT_FOUND")
+                   DuvodVstup(duvod="nepoužívá se"), self.kdo, kod="NOT_FOUND")
 
 
 class TestSqlProRozhrani(ZakladDilu):
@@ -464,7 +465,9 @@ class TestSqlProRozhrani(ZakladDilu):
 
     def test_najdi_dil_podle_cisla(self):
         dil = self.zaloz("ZKROZR 1", velikost_pozice_id=self.velikosti["V1"])
-        self.assertEqual(repozitar.najdi_dil_podle_cisla(self.spoj, "  zkroZR  1 ")["DilID"], dil.dil_id)
+        # číslo normalizuje rozhraní, repozitář očekává kanonický tvar („ZKROZR 1“)
+        self.assertEqual(repozitar.najdi_dil_podle_cisla(
+            self.spoj, rozhrani.normalizuj_identifikacni_cislo(" zkroZR  1 "))["DilID"], dil.dil_id)
         self.assertIsNone(repozitar.najdi_dil_podle_cisla(self.spoj, "ZKROZR 9"))
         self.assertIsNotNone(repozitar.najdi_dil_podle_cisla(self.spoj, "ZKROZR 1", jen_aktivni=True))
         self.deaktivuj(dil.dil_id)
