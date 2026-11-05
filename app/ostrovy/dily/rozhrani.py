@@ -1,7 +1,9 @@
 """VEŘEJNÉ ROZHRANÍ ostrova D – Díly a číselníky (sekce 7.4).
 
 CO: kmenová data dílu, která sklad potřebuje. Normalizace identifikačního čísla je hotová
-(jedna pro hledání, import i kontrolu duplicity); funkce nad DB jsou ve fázi 0 kostra.
+(jedna pro hledání, import i kontrolu duplicity). Fáze 1: `zaloz_dil` už pracuje nad DB,
+čtecí funkce vracejí stále vzorová data – jejich SQL je hotové a otestované v `repozitar.py`
+a zapojí se ve fázi 2 (aby fáze 1 nijak nezměnila chování ostatních ostrovů).
 """
 from __future__ import annotations
 
@@ -9,9 +11,12 @@ import re
 from dataclasses import dataclass
 from decimal import Decimal
 
+from app.platforma.audit import zapis
 from app.platforma.chyby import AppError
 from app.platforma.db import Spojeni
 from app.platforma.typy import Kontext, PolozkaCiselniku, PotrebaMista
+
+from . import domena, repozitar
 
 
 @dataclass(frozen=True)
@@ -94,5 +99,50 @@ def zaloz_dil(spoj: Spojeni, kdo: Kontext, dil: NovyDil) -> int:
     """Založí díl v transakci volajícího (migrace) a zapíše audit. Vrací DilID.
 
     Chyby: ALREADY_EXISTS, NOT_FOUND (neznámý kód číselníku), VALIDATION_ERROR.
+
+    Transakci otevírá i uzavírá volající (P5) – proto tady žádný @transakce není a nic se
+    nekommituje. Kódy číselníků se překládají na ID a rozměr dílu odpovídá jeho velikosti.
     """
-    raise NotImplementedError("Ostrov D – fáze 1")
+    cislo = normalizuj_identifikacni_cislo(dil.identifikacni_cislo)
+    if repozitar.existuje_dil(spoj, cislo):
+        raise AppError("ALREADY_EXISTS", f"Díl {cislo} už existuje.")
+    velikost = dil.potreba.velikost if dil.potreba else None
+    rozmer = dil.potreba.rozmer if dil.potreba else None
+    delka = rozmer.delka_mm if rozmer else None
+    hloubka = rozmer.hloubka_mm if rozmer else None
+    id_velikosti = _id_velikosti(spoj, velikost)
+    material_id = _id_polozky(spoj, "materialy", dil.material)
+    tloustka_id = _id_polozky(spoj, "tloustky", dil.tloustka_mm)
+    operace_id = _id_polozky(spoj, "operace", dil.prvni_operace)
+    domena.potreba_mista(velikost, delka, hloubka)          # rozměr musí sedět k velikosti (Q-01)
+    dil_id = repozitar.vloz_dil(spoj, identifikacni_cislo=cislo, nazev=dil.nazev, material_id=material_id,
+                                tloustka_id=tloustka_id, prvni_operace_id=operace_id,
+                                standardni_davka_ks=dil.standardni_davka_ks, velikost_pozice_id=id_velikosti,
+                                potrebna_delka_mm=delka, potrebna_hloubka_mm=hloubka, vault_url=dil.vault_url,
+                                poznamka=dil.poznamka)
+    zapis(spoj, kdo, "DIL", dil_id, "IdentifikacniCislo", None, cislo)
+    return dil_id
+
+
+def _id_velikosti(spoj: Spojeni, kod: str | None) -> int | None:
+    """Velikost „V1“–„V6“ → ID; velikosti D nevlastní, čte je z pohledu v_VelikostPozice (P2)."""
+    if kod is None:
+        return None
+    id_velikosti = repozitar.id_velikosti_podle_kodu(spoj, kod)
+    if id_velikosti is None:
+        raise AppError("NOT_FOUND", f"Velikost pozice {kod} neexistuje.")
+    return id_velikosti
+
+
+def _id_polozky(spoj: Spojeni, typ: str, kod: object | None) -> int | None:
+    """Kód položky číselníku → ID, neznámý kód je NOT_FOUND (tloušťka přichází jako Decimal).
+
+    Kód se před hledáním normalizuje stejně jako při zápisu, proto „3,00“ najde tloušťku 3.00.
+    """
+    if kod is None:
+        return None
+    normalizovany = domena.normalizuj_kod_ciselniku(typ, str(kod))
+    polozka = repozitar.polozka_ciselniku_podle_kodu(spoj, typ, normalizovany)
+    if polozka is None:
+        raise AppError("NOT_FOUND", f"Položka {normalizovany} číselníku {typ} neexistuje.")
+    return polozka["id"]

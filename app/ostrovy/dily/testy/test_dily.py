@@ -1,4 +1,9 @@
-"""Testy ostrova D: čistá pravidla (hotová) a HTTP kontrakt nad vzorovými daty (kostra fáze 0)."""
+"""Testy ostrova D bez databáze: čistá pravidla a HTTP kontrakt (400/403).
+
+Služby pracují nad T-SQL, takže jejich testy jsou `test_dily_sql.py` (SQL Server). Tady zůstává
+to, co databázi nepotřebuje: pravidla z `domena.py` a odpovědi, které skončí dřív, než se
+dorazí do služby – chybějící/neznamé pole vstupu (400) a chybějící oprávnění (403).
+"""
 import unittest
 from decimal import Decimal
 
@@ -59,88 +64,40 @@ class TestKodyCiselniku(unittest.TestCase):
                 domena.over_nazev_ciselniku(typ, nazev, zakladani=zakladani)
 
 
-class TestCteni(ZakladTestuOstrova):
+class TestOdmitnuteVstupy(ZakladTestuOstrova):
+    """400 a 403 z HTTP vrstvy – služba se zavolat ani musí, proto stačí sqlite kostry."""
+
     ostrovy = (dily.OSTROV,)
 
-    def setUp(self):
-        super().setUp()
+    def test_nezname_pole_filtru(self):
         self.prihlas("DIL_CIST")
-
-    def test_seznam_s_filtrem(self):
-        data = self.over_ok(self.klient.get("/api/dily"))
-        self.assertEqual((data["celkem"], data["strana"], data["velikost"]), (3, 1, 50))
-        data = self.over_ok(self.klient.get("/api/dily?hledat=aar"))
-        self.assertEqual([d["identifikacniCislo"] for d in data["polozky"]], ["AAR10044"])
-
-    def test_detail_a_tvar_dat(self):
-        data = self.over_ok(self.klient.get("/api/dily/12"))
-        self.assertEqual(data["tloustkaMm"], 3.0)              # milimetry jako číslo (4.2)
-        self.assertIsNone(data["potrebnaDelkaMm"])             # chybějící hodnota = null, klíč zůstává
-        self.over_chybu(self.klient.get("/api/dily/999"), 404, "NOT_FOUND")
-
-    def test_ciselniky(self):
-        self.assertEqual(len(self.over_ok(self.klient.get("/api/dily/ciselniky/materialy"))["polozky"]), 6)
-        self.over_chybu(self.klient.get("/api/dily/ciselniky/barvy"), 404, "NOT_FOUND")
-
-    def test_neznamy_filtr_je_chyba(self):
         self.assertEqual(self.chybna_pole(self.klient.get("/api/dily?barva=modra")), {"barva"})
 
-
-class TestSprava(ZakladTestuOstrova):
-    ostrovy = (dily.OSTROV,)
-
-    def setUp(self):
-        super().setUp()
+    def test_chybi_povinny_udaj_cesky(self):
         self.prihlas("DIL_CIST", "KMEN_EDIT")
-
-    def test_bez_opravneni(self):
-        self.prihlas("DIL_CIST")
-        self.over_chybu(self.klient.post("/api/dily", json={"identifikacniCislo": "X1"}), 403, "NO_PERMISSION")
-
-    def test_zalozeni(self):
-        novy = {"identifikacniCislo": " aar  99 ", "velikostPoziceId": 1, "poznamka": "Používat jen na servis."}
-        data = self.over_ok(self.klient.post("/api/dily", json=novy))
-        self.assertEqual((data["identifikacniCislo"], data["velikost"]), ("AAR 99", "V1"))
-        self.assertEqual(data["poznamka"], "Používat jen na servis.")   # pokyn ze sloupce JINÉ INFORMACE (XLSM)
-        self.over_chybu(self.klient.post("/api/dily", json={"identifikacniCislo": "aar10044"}), 409, "ALREADY_EXISTS")
-
-    def test_zalozeni_v6_bez_rozmeru(self):
-        odpoved = self.klient.post("/api/dily", json={"identifikacniCislo": "X6", "velikostPoziceId": 6})
-        self.assertEqual(self.chybna_pole(odpoved), {"potrebnaDelkaMm", "potrebnaHloubkaMm"})
-
-    def test_chyby_validace_cesky(self):
         obalka = self.over_chybu(self.klient.post("/api/dily", json={}), 400, "VALIDATION_ERROR")
         self.assertEqual(obalka["data"]["chyby"], [{"pole": "identifikacniCislo", "zprava": "Povinný údaj.",
                                                     "typ": "missing"}])
 
-    def test_zmena_jen_poslanych_poli(self):
-        data = self.over_ok(self.klient.patch("/api/dily/12", json={"duvod": "oprava názvu", "nazev": "Bok levý"}))
-        self.assertEqual((data["nazev"], data["materialId"], data["poznamka"]), ("Bok levý", 1, None))
-        data = self.over_ok(self.klient.patch("/api/dily/12", json={"duvod": "pokyn", "poznamka": "Musí být 1 mm."}))
-        self.assertEqual(data["poznamka"], "Musí být 1 mm.")
-        odpoved = self.klient.patch("/api/dily/12", json={"duvod": "nic"})
-        self.assertEqual(self.chybna_pole(odpoved), {"telo"})
-        self.assertEqual(self.chybna_pole(self.klient.patch("/api/dily/12", json={"duvod": "oprava", "cislo": "X"})),
-                         {"cislo"})
+    def test_patch_bez_zmeneny_pole_a_s_neznamym_polem(self):
+        self.prihlas("DIL_CIST", "KMEN_EDIT")
+        self.assertEqual(self.chybna_pole(self.klient.patch("/api/dily/12", json={"duvod": "nic"})), {"telo"})
+        self.assertEqual(self.chybna_pole(self.klient.patch("/api/dily/12", json={"duvod": "oprava",
+                                                                                  "cislo": "X"})), {"cislo"})
 
-    def test_deaktivace_a_velikost(self):
-        self.assertFalse(self.over_ok(self.klient.post("/api/dily/12/deaktivovat", json={"duvod": "konec výroby"}))
-                         ["aktivni"])
-        data = self.over_ok(self.klient.patch("/api/dily/12/velikost", json={
-            "velikostPoziceId": 6, "potrebnaDelkaMm": 800, "potrebnaHloubkaMm": 400.5, "duvod": "nový přípravek"}))
-        self.assertEqual((data["velikost"], data["potrebnaDelkaMm"], data["potrebnaHloubkaMm"]), ("V6", 800.0, 400.5))
+    def test_bez_opravneni(self):
+        self.prihlas("DIL_CIST")
+        for volani in (lambda: self.klient.post("/api/dily", json={"identifikacniCislo": "X1"}),
+                       lambda: self.klient.patch("/api/dily/1", json={"duvod": "oprava", "nazev": "X"}),
+                       lambda: self.klient.post("/api/dily/1/deaktivovat", json={"duvod": "konec"}),
+                       lambda: self.klient.patch("/api/dily/1/velikost", json={"velikostPoziceId": 1,
+                                                                               "duvod": "větší"}),
+                       lambda: self.klient.post("/api/dily/ciselniky/materialy", json={"kod": "X"})):
+            with self.subTest(volani=volani):
+                self.over_chybu(volani(), 403, "NO_PERMISSION")
 
-    def test_ciselniky(self):
-        self.assertEqual(self.over_ok(self.klient.post("/api/dily/ciselniky/tloustky", json={"kod": "2,75"}))["kod"],
-                         "2.75")
-        self.assertEqual(self.chybna_pole(self.klient.post("/api/dily/ciselniky/tloustky",
-                                                           json={"kod": "4", "nazev": "čtyři"})), {"nazev"})
-        self.over_chybu(self.klient.post("/api/dily/ciselniky/operace", json={"kod": "laser", "nazev": "Laser"}),
-                        409, "ALREADY_EXISTS")
-        self.assertEqual(self.chybna_pole(self.klient.patch("/api/dily/ciselniky/operace/1",
-                                                            json={"duvod": "oprava", "nazev": None})), {"nazev"})
-        self.assertFalse(self.over_ok(self.klient.post("/api/dily/ciselniky/materialy/1/deaktivovat",
-                                                       json={"duvod": "nepoužívá se"}))["aktivni"])
+    def test_bez_prihlaseni(self):
+        self.over_chybu(self.klient.get("/api/dily"), 401, "NOT_AUTHENTICATED")
 
 
 if __name__ == "__main__":
