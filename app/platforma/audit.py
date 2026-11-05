@@ -32,6 +32,7 @@ def zapis(spoj: Spojeni, kdo: Kontext, typ_objektu: str, objekt_id: int, pole: s
     """Zapíše jednu změnu jedné vlastnosti. Vrací AuditID.
 
     typ_objektu: ASCII VELKÁ_PÍSMENA, např. "DIL", "BOX", "STAT_UMISTENI".
+    Bool: hodnota se předává jako bool (ne jako "1"/"0") a `_text` z ní sepíše "True"/"False".
     """
     if not re.fullmatch(r"[A-Z][A-Z0-9_]*", typ_objektu):
         raise ValueError(f"typ_objektu {typ_objektu!r} musí být VELKÁ_PÍSMENA ASCII")

@@ -20,8 +20,14 @@ Pojistky (testy zapisují):
 Na co rollback NEplatí (a testy s tím musí počítat): `@transakce` i `spojeni_pro_skript()` si otevírají
 vlastní spojení a potvrzují, takže jejich zápis v databázi zůstane. Test proto (a) používá jedinečné
 `requestId`/kódy, (b) netvrdí nic o globálním počtu řádků, (c) čísla, která Create vrátil, si pamatuje v
-`self`, ne v domněnce, že příště budou stejná. Vzorový svět v `HoufekSklad_TEST` zatím není – data,
-která test potřebuje od ostrovů C a D, si musí vložit sám (a počítat s tím, že je někdo vložil před ním).
+`self`, ne v domněnce, že příště budou stejná. Vzorový svět v `HoufekSklad_TEST` není – data od
+ostrovů C a D si test založí sám jejich funkcemi `zaloz_*` v transakci testu, takže se na konci
+vrátí zpět (a počítá s tím, že je někdo vložil před ním).
+
+HTTP test bere klienta z vlastní instance `vytvor_aplikaci(OSTROVY, KONFIGURACE)`, ne z `self.app`.
+Harness drží pushnutý app context `self.app`, takže by požadavky jejího klienta sdílely `g` a hák
+`over_kontext` (ostrov B) by se zavolal jen jednou za test, ne při každém požadavku.
+
 Hesla jen v proměnných prostředí nebo v .env (je v .gitignore), nikdy v kódu ani v repozitáři.
 """
 from __future__ import annotations
@@ -34,7 +40,7 @@ from pathlib import Path
 
 from app.ostrovy import OSTROVY
 from app.platforma import migrace_db, vytvor_aplikaci
-from app.platforma.db import Spojeni, otevri_spojeni
+from app.platforma.db import Spojeni, otevri_spojeni, spojeni_pro_skript
 from app.platforma.konfigurace import Konfigurace
 
 PREDPONA = "HOUFEK_TEST_DB_"
@@ -123,3 +129,13 @@ class ZakladIntegrace(unittest.TestCase):
         self.addCleanup(spoj._zavri)
         self.addCleanup(spoj._rollback)
         return spoj
+
+    def uzivatel_testu(self) -> int:
+        """Neaktivní technický uživatel pro FK SkladovaTransakce.UzivatelID (potvrdí se, přihlásit se nedá)."""
+        with spojeni_pro_skript() as spoj:
+            uzivatel_id = spoj.hodnota("SELECT UzivatelID FROM dbo.Uzivatel WHERE OsobniCislo = 'TEST-INTEGRACE'")
+            if uzivatel_id is None:
+                uzivatel_id = spoj.vloz(
+                    "INSERT INTO dbo.Uzivatel (OsobniCislo, Jmeno, Prijmeni, RoleID, Aktivni) "
+                    "SELECT 'TEST-INTEGRACE', N'Integrační', N'Test', RoleID, 0 FROM dbo.Role WHERE KodRole = 'ADMIN'")
+        return int(uzivatel_id)

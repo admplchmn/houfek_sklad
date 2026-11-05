@@ -5,7 +5,6 @@ import uuid
 
 from app.ostrovy.struktura import rozhrani as struktura
 from app.platforma.chyby import AppError
-from app.platforma.db import spojeni_pro_skript
 from app.platforma.kontrakty import SkladovyVstup, Vystup
 from app.platforma.sql_chyby import je_limit_zamku
 from app.platforma.transakce import transakce
@@ -65,16 +64,6 @@ class TestZamky(ZakladIntegrace):
 
 
 class TestRequestId(ZakladIntegrace):
-    def uzivatel_testu(self) -> int:
-        """Neaktivní technický uživatel pro FK SkladovaTransakce.UzivatelID (potvrdí se, přihlásit se nedá)."""
-        with spojeni_pro_skript() as spoj:
-            uzivatel_id = spoj.hodnota("SELECT UzivatelID FROM dbo.Uzivatel WHERE OsobniCislo = 'TEST-INTEGRACE'")
-            if uzivatel_id is None:
-                uzivatel_id = spoj.vloz(
-                    "INSERT INTO dbo.Uzivatel (OsobniCislo, Jmeno, Prijmeni, RoleID, Aktivni) "
-                    "SELECT 'TEST-INTEGRACE', N'Integrační', N'Test', RoleID, 0 FROM dbo.Role WHERE KodRole = 'ADMIN'")
-        return int(uzivatel_id)
-
     def test_stejny_request_id_vrati_ulozeny_vysledek(self):
         kdo = Kontext(self.uzivatel_testu(), None, "ADMIN", frozenset())
         vstup = ZkusebniVstup(request_id=uuid.uuid4(), poznamka="integrace")

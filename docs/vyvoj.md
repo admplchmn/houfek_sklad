@@ -199,8 +199,8 @@ Funkce s komentářem `KOSTRA (fáze 0)` vracejí data z `ukazky.py`. Co je ješ
 
 1. Implementace je **beze změny podpisu** (jména a pořadí parametrů, návratový typ). Kontrola kontraktů změnu jinak odmítne.
 2. **Fáze 1:** SQL napište do `repozitar.py` a vlastní služby (`sluzby.py`) na něj napojte hned.
-3. **Funkce v `rozhrani.py`, které volají jiné ostrovy, vracejí ve fázi 1 dál vzorová data.** Ve fázi 2 (po bráně K2) jejich tělo zavolá repozitář. Testy ostatních ostrovů tak celou fázi 1 běží nad stabilními vzorovými daty. Výjimka: funkce, které zatím vyvolají `NotImplementedError` (zápisy pro jiné ostrovy), se programují hned ([rozdeleni-prace.md](rozdeleni-prace.md), sekce 4).
-4. Po nahrazení smažte import `ukazky` z funkce. `ukazky.py` nechte: spotřebitelé ho používají v testech.
+3. **Funkce v `rozhrani.py`, které volají jiné ostrovy, napojí repozitář hned, jak mají čtecí dotazy hotové a otestované** (rozhodnutí vedoucího 5. 11. 2026). Nad SQL Serverem volají `repozitar.py`, bez něj (sqlite kostra nebo `spoj` = `None`) vracejí dál vzorová data, takže testy ostatních ostrovů běží nad stabilními vzorky. Výjimka: funkce, které zatím vyvolají `NotImplementedError` (zápisy pro jiné ostrovy), se programují hned ([rozdeleni-prace.md](rozdeleni-prace.md), sekce 4).
+4. Import `ukazky` z funkce nemažte – je to větev pro běh bez SQL Serveru. `ukazky.py` nechte: spotřebitelé ho používají v testech.
 5. V provozním režimu (`HOUFEK_VYVOJ=0`) volání kostry selže. Nikdo tak omylem neuvidí vzorová data jako skutečná (TD-19).
 
 ### 3.5 Změna schématu nebo pohledu
