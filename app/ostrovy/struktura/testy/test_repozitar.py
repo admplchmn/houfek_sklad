@@ -97,7 +97,7 @@ def vnitrni_pozice_zapisu(spoj: FalesiveSpojeni) -> list[tuple]:
 
 
 class TestZalozBox(unittest.TestCase):
-    def test_vlozeni_doprostred_posune_boky_vpravo(self):
+    def test_vlozeni_doprostred_posune_boxy_vpravo(self):
         """T23: vložení na 2. místo – boxy 12 a 13 jsou na 3. a 4., jejich PoziceID zůstávají (Δ2, dva kroky)."""
         spoj = spoj_s_urovni(poradi_boxu=(1, 2, 3))
         box_id = repozitar.zaloz_box(spoj, 7, 2, "DYN", "C4", Decimal(400), Decimal(360))
@@ -209,6 +209,15 @@ class TestZalozeniStruktury(unittest.TestCase):
         spoj = FalesiveSpojeni(hodnota={"COUNT(*) FROM dbo.Regal": 1, "COUNT(*) FROM dbo.Uroven": 0})
         self.assertEqual(repozitar.zaloz_uroven(spoj, 9, "u5", 5, Decimal(2400), Decimal(800)), 501)
         self.assertEqual(spoj.zapis("INSERT INTO dbo.Uroven")[1], (9, "U05", 5, Decimal(2400), Decimal(800)))
+
+    def test_uroven_plocha_musi_mit_rozmer(self):
+        """Nulovou plochu by odmítl až CHECK v tabulce – přes hranici ostrova má jít AppError (P7)."""
+        spoj = FalesiveSpojeni(hodnota={"COUNT(*) FROM dbo.Regal": 1, "COUNT(*) FROM dbo.Uroven": 0})
+        with self.assertRaises(AppError) as zachyceno:
+            repozitar.zaloz_uroven(spoj, 9, "u5", 5, Decimal(2400), Decimal(0))
+        self.assertEqual(zachyceno.exception.kod, "VALIDATION_ERROR")
+        self.assertEqual({c["pole"] for c in zachyceno.exception.data["chyby"]}, {"hloubkaMm"})
+        self.assertEqual(spoj.zapisy, [])
 
 
 class TestCteni(unittest.TestCase):
