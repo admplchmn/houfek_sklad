@@ -1,4 +1,4 @@
-"""Integrační testy ostrova D nad SQL Serverem: služby, audit a SQL, které se zapojí ve fázi 2.
+"""Integrační testy ostrova D nad SQL Serverem: služby, audit a čtecí funkce rozhraní.
 
 Služby se volí `__wrapped__`, tedy bez dekorátoru, takže tělo běží ve spojení a transakci testu a
 na konci se vrátí zpět (dekorátor @transakce/@cteni si otevírá vlastní spojení a potvrzuje).
@@ -9,8 +9,9 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from app.ostrovy.dily import repozitar, rozhrani, sluzby, ukazky
+from app.ostrovy.dily import repozitar, rozhrani, sluzby
 from app.ostrovy.dily.kontrakty import (
+    TYPY_CISELNIKU,
     DilyFiltr,
     NovyCiselnikVstup,
     NovyDilVstup,
@@ -322,7 +323,7 @@ class TestZmenaDilu(ZakladDilu):
         dil = self.zaloz("ZKZMENA 4")
         self.assertFalse(self.deaktivuj(dil.dil_id, "konec výroby").aktivni)
         self.assertEqual([(r["Pole"], r["StaraHodnota"], r["NovaHodnota"], r["Poznamka"])
-                          for r in self.audity(dil.dil_id)][1:], [("Aktivni", "1", "0", "konec výroby")])
+                          for r in self.audity(dil.dil_id)][1:], [("Aktivni", "True", "False", "konec výroby")])
         self.chyba(sluzby.deaktivuj_dil.__wrapped__, self.spoj, 2_000_000_000, DuvodVstup(duvod="konec"),
                    self.kdo, kod="NOT_FOUND")
 
@@ -459,7 +460,7 @@ class TestCiselniky(ZakladDilu):
             self.spoj, "materialy", material.id, DuvodVstup(duvod="nepoužívá se"), self.kdo).aktivni)
         self.assertEqual([(r["Pole"], r["StaraHodnota"], r["NovaHodnota"], r["Poznamka"])
                           for r in self.audity(material.id, "MATERIAL")],
-                         [("Aktivni", "1", "0", "nepoužívá se")])
+                         [("Aktivni", "True", "False", "nepoužívá se")])
         dil = self.zaloz("ZKVYRITY", material_id=material.id)
         self.assertEqual(self.zmen(dil.dil_id, duvod="oprava", nazev="Bok levý").material, "ZKVYR")
         self.chyba(sluzby.deaktivuj_polozku_ciselniku.__wrapped__, self.spoj, "materialy", 2_000_000_000,
@@ -467,57 +468,65 @@ class TestCiselniky(ZakladDilu):
 
 
 class TestSqlProRozhrani(ZakladDilu):
-    """Dotazy pro `rozhrani` jsou hotové a otestované; ve fázi 1 do nich rozhraní ještě nesahá."""
+    """Čtecí funkce `rozhrani` nad SQL Serverem – volané přes rozhraní, jak je volí E, F a G.
 
-    def test_najdi_dil_podle_cisla(self):
-        dil = self.zaloz("ZKROZR 1", velikost_pozice_id=self.velikosti["V1"])
-        # číslo normalizuje rozhraní, repozitář očekává kanonický tvar („ZKROZR 1“)
-        self.assertEqual(repozitar.najdi_dil_podle_cisla(
-            self.spoj, rozhrani.normalizuj_identifikacni_cislo(" zkroZR  1 "))["DilID"], dil.dil_id)
-        self.assertIsNone(repozitar.najdi_dil_podle_cisla(self.spoj, "ZKROZR 9"))
-        self.assertIsNotNone(repozitar.najdi_dil_podle_cisla(self.spoj, "ZKROZR 1", jen_aktivni=True))
+    Nad spojením s dialektem „mssql“ nesahají do vzorových dat (`ukazky`), ale do databáze:
+    díl založený službou tady v nich najdou a vzorový svět (AAR10044 …) naopak nezná.
+    """
+
+    def test_najdi_dil_normalizuje_cislo_a_vyrazeny_nenajde(self):
+        dil = self.zaloz("ZKROZR 1", nazev="Bok levý", velikost_pozice_id=self.velikosti["V1"],
+                         standardni_davka_ks=10, vault_url="https://vault.example/zk.pdf")
+        # číslo normalizuje rozhraní („ zkroZR  1 “) a DilInfo skládá kódy číselníků i potřebu místa
+        self.assertEqual(rozhrani.najdi_dil(self.spoj, " zkroZR  1 "),
+                         rozhrani.DilInfo(dil_id=dil.dil_id, identifikacni_cislo="ZKROZR 1", nazev="Bok levý",
+                                          material="S235", tloustka_mm=Decimal("3.00"), prvni_operace="LASER",
+                                          standardni_davka_ks=10, potreba=PotrebaMista("V1"),
+                                          vault_url="https://vault.example/zk.pdf", aktivni=True))
+        self.chyba(rozhrani.najdi_dil, self.spoj, "ZKROZR 9", kod="NOT_FOUND")
         self.deaktivuj(dil.dil_id)
-        self.assertIsNone(repozitar.najdi_dil_podle_cisla(self.spoj, "ZKROZR 1", jen_aktivni=True))
-        self.assertIsNotNone(repozitar.najdi_dil_podle_cisla(self.spoj, "ZKROZR 1"))
-        self.assertTrue(repozitar.existuje_dil(self.spoj, "ZKROZR 1"))                # najde i vyřazený
+        self.chyba(rozhrani.najdi_dil, self.spoj, "ZKROZR 1", kod="NOT_FOUND")               # jen aktivní
+        self.assertIsNotNone(repozitar.najdi_dil_podle_cisla(self.spoj, "ZKROZR 1"))          # bez filtru i vyřazený
+        self.assertTrue(repozitar.existuje_dil(self.spoj, "ZKROZR 1"))                        # číslo zůstává zabrané
 
-    def test_nacti_dily_podle_id(self):
-        prvni = self.zaloz("ZKHROM 1")
-        druhy = self.zaloz("ZKHROM 2")
-        nactene = repozitar.nacti_dily_podle_id(self.spoj, [prvni.dil_id, 2_000_000_000, druhy.dil_id])
-        self.assertEqual({r["DilID"] for r in nactene}, {prvni.dil_id, druhy.dil_id})
-        self.assertEqual({r["KodMaterialu"] for r in nactene}, {"S235"})
-        self.assertEqual(repozitar.nacti_dily_podle_id(self.spoj, []), [])
+    def test_nacti_dily_vraci_i_neaktivni_a_neznama_id_chybi(self):
+        s_rozmerem = self.zaloz("ZKHROM 1", velikost_pozice_id=self.velikosti["V6"],
+                                potrebna_delka_mm=Decimal("800"), potrebna_hloubka_mm=Decimal("400.5"))
+        vyrazeny = self.zaloz("ZKHROM 2")
+        self.deaktivuj(vyrazeny.dil_id)
+        nactene = rozhrani.nacti_dily(self.spoj, [s_rozmerem.dil_id, 2_000_000_000, vyrazeny.dil_id])
+        self.assertEqual(set(nactene), {s_rozmerem.dil_id, vyrazeny.dil_id})
+        self.assertEqual(nactene[s_rozmerem.dil_id].potreba,
+                         PotrebaMista("V6", Rozmer(Decimal("800.00"), Decimal("400.50"))))
+        self.assertFalse(nactene[vyrazeny.dil_id].aktivni)
+        self.assertIsNone(nactene[vyrazeny.dil_id].potreba)                 # díl bez velikosti (Q-26)
+        self.assertEqual(rozhrani.nacti_dily(self.spoj, []), {})
 
-    def test_hledani_dilu(self):
+    def test_hledej_dily_jen_aktivni_s_filtry_a_limitem(self):
         dil = self.zaloz("ZKHULED 1", nazev="Levý bok ke hledání", velikost_pozice_id=self.velikosti["V1"])
         druhy = self.zaloz("ZKHULED 2", material_id=self.materialy["S355"], tloustka_id=self.tloustky["5.00"],
                            prvni_operace_id=self.operace["PILA"])
-        self.assertEqual({r["DilID"] for r in repozitar.hledani_dilu(self.spoj, "zkhuLED")},
-                         {dil.dil_id, druhy.dil_id})
+        self.assertEqual([d.dil_id for d in rozhrani.hledej_dily(self.spoj, "zkhuLED")],
+                         [dil.dil_id, druhy.dil_id])                        # text najde i název, řadí podle čísla
         for filtr, ocekavani in (({"material": "S355"}, [druhy]), ({"tloustka_mm": Decimal("5.00")}, [druhy]),
                                  ({"prvni_operace": "PILA"}, [druhy]),
                                  ({"material": "S235"}, [dil])):
             with self.subTest(**filtr):
-                self.assertEqual([r["DilID"] for r in repozitar.hledani_dilu(self.spoj, "ZK", **filtr)],
+                self.assertEqual([d.dil_id for d in rozhrani.hledej_dily(self.spoj, "ZK", **filtr)],
                                  [d.dil_id for d in ocekavani])
-        self.assertEqual([r["DilID"] for r in repozitar.hledani_dilu(self.spoj, "ke hledání")], [dil.dil_id])
-        self.assertEqual([r["DilID"] for r in repozitar.hledani_dilu(self.spoj, "ZKHULED",
-                                                                    limit=1)], [dil.dil_id])
+        self.assertEqual([d.dil_id for d in rozhrani.hledej_dily(self.spoj, "ke hledání")], [dil.dil_id])
+        self.assertEqual([d.dil_id for d in rozhrani.hledej_dily(self.spoj, "ZKHULED", limit=1)], [dil.dil_id])
         self.deaktivuj(dil.dil_id)
-        self.assertEqual([r["DilID"] for r in repozitar.hledani_dilu(self.spoj, "ZKHULED")], [druhy.dil_id])
+        self.assertEqual([d.dil_id for d in rozhrani.hledej_dily(self.spoj, "ZKHULED")], [druhy.dil_id])
 
-    def test_rozhrani_ve_fazi_1_zůstává_na_vzorových_datech(self):
-        """Úkol 3: skutečná SQL jsou v repozitáři, rozhraní se přepne až ve fázi 2.
-
-        Test pozná, že čtecí funkce do databáze ještě nesahají: díl založený tady přes
-        rozhraní najde a vzorový svět naopak nezná.
-        """
-        dil = self.zaloz("ZKROZR 2")
-        self.assertEqual(rozhrani.najdi_dil(self.spoj, " aar10044 ").identifikacni_cislo, "AAR10044")
-        self.assertEqual([d.identifikacni_cislo for d in rozhrani.hledej_dily(self.spoj, "aar")], ["AAR10044"])
-        self.assertEqual(set(rozhrani.nacti_dily(self.spoj, [12, 2_000_000_000])), {12})    # id ze vzoru
-        self.chyba(rozhrani.najdi_dil, self.spoj, "ZKROZR 2", kod="NOT_FOUND")               # DB nezná
-        self.assertEqual(repozitar.nacti_dil(self.spoj, dil.dil_id)["IdentifikacniCislo"], "ZKROZR 2")
-        self.assertEqual({p.kod for p in rozhrani.nacti_ciselniky(self.spoj)["materialy"]},
-                         {p.kod for p in ukazky.CISELNIKY["materialy"]})
+    def test_nacti_ciselniky_obsahuji_i_vyradene_polozky(self):
+        material = sluzby.zaloz_polozku_ciselniku.__wrapped__(self.spoj, "materialy",
+                                                             NovyCiselnikVstup(kod="ZKVYRC"), self.kdo)
+        sluzby.deaktivuj_polozku_ciselniku.__wrapped__(self.spoj, "materialy", material.id,
+                                                       DuvodVstup(duvod="nepoužívá se"), self.kdo)
+        ciselniky = rozhrani.nacti_ciselniky(self.spoj)
+        self.assertEqual(set(ciselniky), set(TYPY_CISELNIKU))               # stejné klíče jako vzorová data
+        self.assertEqual({p.kod: (p.id, p.nazev, p.aktivni) for p in ciselniky["materialy"]}["ZKVYRC"],
+                         (material.id, None, False))
+        self.assertEqual({p.kod: p.nazev for p in ciselniky["operace"]}["LASER"], "Laser")
+        self.assertIn("3.00", {p.kod for p in ciselniky["tloustky"]})       # tloušťka je kód jako text
