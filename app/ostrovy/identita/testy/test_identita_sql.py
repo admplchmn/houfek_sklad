@@ -1,8 +1,9 @@
 """Integrační testy ostrova B proti SQL Serveru (fáze 1): přihlášení, uživatelé, role, terminály.
 
-Testovací databáze neobsahuje žádné uživatele a role mají prázdné přiřazení oprávnění (brána G4),
-proto si test vkládá sám, co potřebuje – osobní čísla i kódy terminálů jsou unikátní podle
-náhodné značky, takže se testy navzájem nerazí ani po opakovaném běhu nad stejnou databází.
+Testovací databázi sdílejí všechny testy a rollback platí jen na to, co test nezapsal přes
+`spojeni_pro_skript()`: proto si test vkládá sám, co potřebuje, osobní čísla, kódy terminálů i
+hledaná jména jsou unikátní podle náhodné značky a ověřuje jen data, která sám nastavil – takže se
+testy navzájem nerazí ani po opakovaném běhu nad stejnou databází.
 
 Tělo služby se volá přes `__wrapped__`, aby běželo na spojení testu (a rollback ho zrušilo).
 Dekorovaná funkce se volí tam, kde je potřeba vlastní transakce: porušení cizího klíče serverem
@@ -14,6 +15,7 @@ from __future__ import annotations
 import itertools
 import uuid
 
+from app.ostrovy import OSTROVY
 from app.ostrovy.identita import domena, sluzby
 from app.ostrovy.identita.kontrakty import (
     NovyTerminalVstup,
@@ -26,11 +28,12 @@ from app.ostrovy.identita.kontrakty import (
     ZmenaUzivateleVstup,
 )
 from app.ostrovy.identita.testy.test_identita import chybna_pole
+from app.platforma import vytvor_aplikaci
 from app.platforma.chyby import AppError
 from app.platforma.db import spojeni_pro_skript
 from app.platforma.kontrakty import DuvodVstup
 from app.platforma.typy import Kontext
-from tests.integrace.zaklad import ZakladIntegrace
+from tests.integrace.zaklad import KONFIGURACE, ZakladIntegrace
 
 PIN = "1234"
 BEZ_PRACOVISTE = 2_000_000_000      # takové pracoviště nemůže existovat → FK 547 → VALIDATION_ERROR
@@ -40,11 +43,21 @@ ZMENENO = sluzby.ZMENENO
 class ZakladIdentit(ZakladIntegrace):
     """Výchozí data: jedinečná osobní čísla a správce, který smí něco měnit."""
 
+    aplikace_http = None        # vlastní instance aplikace – vytvoří se jednou a sdílí ji všechny testy
+
     def setUp(self) -> None:
         super().setUp()
         self.znacka = uuid.uuid4().hex[:6].upper()
         self._dalsi = itertools.count(1)
-        self.klient = self.app.test_client()
+        # HTTP testy běží nad vlastní instancí aplikace, ne nad `self.app` z harnessu: ten v setUp drží
+        # pushnutý app context a Flask pro požadavky jeho test klienta použije tentýž – `g.houfek_kontext`
+        # z prvního požadavku (přihlášení) pak platí i pro další a hák over_kontext se zavolá jen jednou.
+        # Vlastní instance má na každý požadavek vlastní kontext, takže ověření session a oprávnění
+        # probíhá při každém požadavku jako v provozu. Až po super().setUp(): harness do té doby
+        # založí testovací databázi a dorovná schéma migracemi.
+        if ZakladIdentit.aplikace_http is None:
+            ZakladIdentit.aplikace_http = vytvor_aplikaci(OSTROVY, KONFIGURACE)
+        self.klient = ZakladIdentit.aplikace_http.test_client()
         self.cisla: dict[int, str] = {}
         self.role = {radek["KodRole"]: int(radek["RoleID"]) for radek in
                      self.spoj.dotaz("SELECT RoleID, KodRole FROM dbo.Role")}
@@ -205,17 +218,20 @@ class TestPrihlaseni(ZakladIdentit):
 
 class TestUzivatele(ZakladIdentit):
     def test_seznam_filter_strankovani_a_zadavani(self):
-        self.zaloz(prijmeni="Vanek")
-        self.zaloz(prijmeni="Adams")
+        # hledá se i ve jméně a v příjmení, takže hledaná jména nesou značku testu – jinak test narazí
+        # na potvrzené uživatele jiného testu (osobní číslo značku má vždy)
+        jmeno, vanek = f"Petr{self.znacka}", f"Vanek-{self.znacka}"
+        self.zaloz(prijmeni=vanek)
+        self.zaloz(jmeno=jmeno, prijmeni="Adams")
         self.zaloz(prijmeni="Novak")
         self._vloz("OPER", "Pavla", "Kralova", aktivni=False)
         filtr = dict(hledat=self.znacka, role_id=self.role["OPER"])
         prvni = sluzby.seznam_uzivatelu.__wrapped__(self.spoj, UzivateleFiltr(**filtr))
         self.assertEqual((prvni.celkem, [radek.prijmeni for radek in prvni.polozky]),
-                         (3, ["Adams", "Novak", "Vanek"]))
+                         (3, ["Adams", "Novak", vanek]))
         self.assertEqual(prvni.velikost, 50)
         druha = sluzby.seznam_uzivatelu.__wrapped__(self.spoj, UzivateleFiltr(strana=2, velikost=2, **filtr))
-        self.assertEqual((druha.celkem, [radek.prijmeni for radek in druha.polozky]), (3, ["Vanek"]))
+        self.assertEqual((druha.celkem, [radek.prijmeni for radek in druha.polozky]), (3, [vanek]))
         self.assertEqual(sluzby.seznam_uzivatelu.__wrapped__(
             self.spoj, UzivateleFiltr(aktivni=None, **filtr)).celkem, 4)
         self.assertEqual([radek.prijmeni for radek in
@@ -224,7 +240,9 @@ class TestUzivatele(ZakladIdentit):
                          ["Kralova"])
         # hledá se i ve jméně a `%` v hledaném řetězci není wildcard
         self.assertEqual(sluzby.seznam_uzivatelu.__wrapped__(
-            self.spoj, UzivateleFiltr(hledat="Vanek", role_id=self.role["OPER"])).celkem, 1)
+            self.spoj, UzivateleFiltr(hledat=jmeno, role_id=self.role["OPER"])).celkem, 1)
+        self.assertEqual(sluzby.seznam_uzivatelu.__wrapped__(
+            self.spoj, UzivateleFiltr(hledat=vanek, role_id=self.role["OPER"])).celkem, 1)
         self.assertEqual(sluzby.seznam_uzivatelu.__wrapped__(
             self.spoj, UzivateleFiltr(hledat=f"{self.znacka}%", role_id=self.role["OPER"])).celkem, 0)
         self.assertFalse({"pin", "pinHash", "kodKarty"} & set(prvni.polozky[0].model_dump()))
@@ -318,12 +336,14 @@ class TestRole(ZakladIdentit):
     def test_seznam_roli_je_z_databaze(self):
         self._opravneni_role("OPER", "SKLAD_VYDEJ", "DIL_CIST")
         self._opravneni_role("MISTR")
-        role = sluzby.seznam_roli.__wrapped__(self.spoj).polozky
-        self.assertEqual([radek.kod_role for radek in role], ["OPER", "SKL", "MISTR", "TECH", "ADMIN"])
-        self.assertEqual([radek.nazev for radek in role[:2]], ["Operátor", "Skladník"])
-        self.assertTrue(all(radek.aktivni for radek in role))
-        self.assertEqual([radek.opravneni for radek in role[:2]], [["DIL_CIST", "SKLAD_VYDEJ"], []])
-        self.assertEqual(role[0].popis, "Čtení, standardní příjem a výdej podle přidělených oprávnění.")
+        radky = sluzby.seznam_roli.__wrapped__(self.spoj).polozky
+        self.assertEqual([radek.kod_role for radek in radky], ["OPER", "SKL", "MISTR", "TECH", "ADMIN"])
+        self.assertTrue(all(radek.aktivni for radek in radky))
+        role = {radek.kod_role: radek for radek in radky}
+        self.assertEqual((role["OPER"].nazev, role["OPER"].popis),
+                         ("Operátor", "Čtení, standardní příjem a výdej podle přidělených oprávnění."))
+        # oprávnění ověřuje jen u rolí, které si v tomto testu nastavil – RoleOpravneni mění i jiné testy
+        self.assertEqual((role["OPER"].opravneni, role["MISTR"].opravneni), (["DIL_CIST", "SKLAD_VYDEJ"], []))
 
     def test_zmena_opravneni_nahradi_radky_a_pise_audit(self):
         self._opravneni_role("OPER", "DIL_CIST", "SKLAD_PRIJEM")
