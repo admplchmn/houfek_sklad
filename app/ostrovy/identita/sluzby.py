@@ -1,22 +1,25 @@
 """Služby ostrova B – Identita. Jedna operace = @transakce, čtení = @cteni.
 
-Fáze 0: kontrakt a čistá pravidla (domena) jsou hotové, data jsou vzorová (KOSTRA).
-Ve fázi 1 vlastník nahradí řádky `from . import ukazky` voláním repozitar.*, ověření PINu
-domena.pin_sedi (argon2) a doplní audit; podpisy funkcí se nemění.
+Fáze 1: data jsou z databáze (`repozitar`), PIN se ověřuje argon2 hashem (`domena.pin_sedi`) a
+každá změna kmenových dat se píše do auditu (`app.platforma.audit`). Důvod změny jde do
+`AuditZmen.Poznamka`; PIN ani kód karty se nikdy jako hodnota neaudituje – jen slovo „změněno“.
 
 Session nečte ani nezapisuje žádná služba – to dělá endpoint přes app.platforma.auth.
 """
 from __future__ import annotations
 
-import hmac
+from typing import Any
 
+from pydantic import SecretStr
+
+from app.platforma import audit
 from app.platforma.chyby import AppError, chyba_vstupu
 from app.platforma.db import Spojeni, cteni
 from app.platforma.kontrakty import DuvodVstup, Seznam, Strana
 from app.platforma.transakce import transakce
 from app.platforma.typy import Kontext
 
-from . import domena
+from . import domena, repozitar
 from .kontrakty import (
     NovyTerminalVstup,
     NovyUzivatelVstup,
@@ -32,8 +35,9 @@ from .kontrakty import (
     ZmenaUzivateleVstup,
 )
 
-NOVE_ID = 9001   # KOSTRA: ID nově založeného objektu ve vzorových odpovědích
 ZPRAVA_NEPLATNE = "Neplatné osobní číslo nebo PIN."
+ZPRAVA_NEPLATI = "Přihlášení už neplatí. Přihlaste se znovu."
+ZMENENO = "změněno"      # hodnota PINu a karty se do auditu nikdy nedostane
 
 # --- přihlášení ------------------------------------------------------------------------------------
 
@@ -43,26 +47,25 @@ def over_prihlaseni(spoj: Spojeni, vstup: PrihlaseniVstup) -> PrihlasenyUzivatel
     """Osobní číslo + PIN (+ kód terminálu z PDA) → přihlášený uživatel s aktuálními oprávněními role.
 
     Neznámé číslo, chybný PIN, uživatel bez PINu i neaktivní uživatel vrací stejnou chybu
-    NOT_AUTHENTICATED (7.2 „Hotovo, když“). Fáze 1: domena.pin_sedi proti Uzivatel.PinHash
-    (i pro neexistujícího uživatele, kvůli stejné době odpovědi) a zámek po chybných pokusech (TD-07).
+    NOT_AUTHENTICATED (7.2 „Hotovo, když“). Hash se ověřuje i pro neexistující číslo, aby délka
+    odpovědi nic neprozradila. Zámek po chybných pokusech je TD-07/Q-33, zatím se nehlídá.
     Chyby: NOT_AUTHENTICATED, VALIDATION_ERROR (neznámý nebo vyřazený terminál).
     """
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    terminal = _terminal_pri_prihlaseni(vstup.kod_terminalu)
+    terminal = _terminal_pri_prihlaseni(spoj, vstup.kod_terminalu)
     try:
         cislo = domena.normalizuj_osobni_cislo(vstup.osobni_cislo)
     except AppError:
         raise AppError("NOT_AUTHENTICATED", ZPRAVA_NEPLATNE) from None
-    uzivatel = next((u for u in ukazky.UZIVATELE.values() if u.osobni_cislo == cislo), None)
-    ulozeny_pin = ukazky.PINY.get(cislo, "")
-    pin_sedi = hmac.compare_digest(vstup.pin.get_secret_value().encode(), ulozeny_pin.encode()) and bool(ulozeny_pin)
-    if uzivatel is None or not uzivatel.aktivni or not pin_sedi:
+    radek = repozitar.uzivatel_podle_cisla(spoj, cislo)
+    if not domena.pin_sedi(vstup.pin.get_secret_value(), radek["PinHash"] if radek else None):
         raise AppError("NOT_AUTHENTICATED", ZPRAVA_NEPLATNE)
-    role = _nacti_roli(uzivatel.role_id)
+    if radek is None or not radek["Aktivni"]:
+        raise AppError("NOT_AUTHENTICATED", ZPRAVA_NEPLATNE)
     return PrihlasenyUzivatel(
-        uzivatel_id=uzivatel.uzivatel_id, osobni_cislo=uzivatel.osobni_cislo, cele_jmeno=uzivatel.cele_jmeno,
-        kod_role=role.kod_role, nazev_role=role.nazev, opravneni=sorted(role.opravneni),
+        uzivatel_id=int(radek["UzivatelID"]), osobni_cislo=radek["OsobniCislo"],
+        cele_jmeno=domena.cele_jmeno(radek["Jmeno"], radek["Prijmeni"]),
+        kod_role=radek["KodRole"], nazev_role=radek["NazevRole"],
+        opravneni=repozitar.opravneni_role(spoj, int(radek["RoleID"])),
         terminal_id=terminal.terminal_id if terminal else None,
         kod_terminalu=terminal.kod_terminalu if terminal else None,
         pracoviste_id=terminal.pracoviste_id if terminal else None)
@@ -71,35 +74,38 @@ def over_prihlaseni(spoj: Spojeni, vstup: PrihlaseniVstup) -> PrihlasenyUzivatel
 @cteni
 def ja(spoj: Spojeni, kdo: Kontext) -> PrihlasenyUzivatel:
     """Přihlášený uživatel s aktuálními údaji. Chyby: NOT_AUTHENTICATED (mezitím smazaný uživatel)."""
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    uzivatel = ukazky.UZIVATELE.get(kdo.uzivatel_id)
-    if uzivatel is None:
-        raise AppError("NOT_AUTHENTICATED", "Přihlášení už neplatí. Přihlaste se znovu.")
-    role = _nacti_roli(uzivatel.role_id)
-    terminal = next((t for t in ukazky.TERMINALY if t.terminal_id == kdo.terminal_id), None)
+    radky = repozitar.prihlaseny_uzivatel(spoj, kdo.uzivatel_id, kdo.terminal_id)
+    if not radky:
+        raise AppError("NOT_AUTHENTICATED", ZPRAVA_NEPLATI)
+    prvni = radky[0]
     return PrihlasenyUzivatel(
-        uzivatel_id=uzivatel.uzivatel_id, osobni_cislo=uzivatel.osobni_cislo, cele_jmeno=uzivatel.cele_jmeno,
-        kod_role=role.kod_role, nazev_role=role.nazev, opravneni=sorted(kdo.opravneni),
-        terminal_id=kdo.terminal_id, kod_terminalu=terminal.kod_terminalu if terminal else None,
-        pracoviste_id=terminal.pracoviste_id if terminal else None)
+        uzivatel_id=int(prvni["UzivatelID"]), osobni_cislo=prvni["OsobniCislo"],
+        cele_jmeno=domena.cele_jmeno(prvni["Jmeno"], prvni["Prijmeni"]),
+        kod_role=prvni["KodRole"], nazev_role=prvni["NazevRole"],
+        opravneni=sorted({radek["KodOpravneni"] for radek in radky if radek["KodOpravneni"]}),
+        terminal_id=prvni["TerminalID"], kod_terminalu=prvni["KodTerminalu"],
+        pracoviste_id=prvni["PracovisteID"])
 
 
 @cteni
 def over_kontext(spoj: Spojeni, kdo: Kontext) -> Kontext | None:
     """Hák Platformy (docs/adr/0007): volá se při každém požadavku přihlášeného uživatele.
 
-    None = uživatel neaktivní nebo smazaný → Platforma smaže session. Fáze 1: jeden dotaz podle PK
-    (v_Uzivatel + RoleOpravneni) a vrátí Kontext s AKTUÁLNÍMI oprávněními role.
-    KOSTRA: odmítne jen uživatele, kteří jsou ve vzorových datech neaktivní; ostatní propustí beze
-    změny, aby fungovalo vývojové přihlášení s libovolným ID (/api/system/vyvojove-prihlaseni).
+    None = uživatel neaktivní nebo smazaný → Platforma smaže session, vyřazení tedy platí už
+    příštím požadavkem. Vrací AKTUÁLNÍ oprávnění role, takže i odebrané právo přestane platit
+    příštím požadavkem (jeden dotaz podle PK).
+    Bez SQL Serveru (vývoj a testy bez DB) tabulky ostrova neexistují – tam se vrací kostra.
     """
-    from . import ukazky  # KOSTRA (fáze 0)
+    if spoj.dialekt != "mssql":
+        from . import ukazky  # KOSTRA (fáze 0): vývoj a testy bez SQL Serveru
 
-    uzivatel = ukazky.UZIVATELE.get(kdo.uzivatel_id)
-    if uzivatel is not None and not uzivatel.aktivni:
+        uzivatel = ukazky.UZIVATELE.get(kdo.uzivatel_id)
+        return None if (uzivatel is not None and not uzivatel.aktivni) else kdo
+    radky = repozitar.kontext_uzivatele(spoj, kdo.uzivatel_id)
+    if not radky or not radky[0]["Aktivni"]:
         return None
-    return kdo
+    return Kontext(kdo.uzivatel_id, kdo.terminal_id, radky[0]["KodRole"],
+                   frozenset(radek["KodOpravneni"] for radek in radky if radek["KodOpravneni"]))
 
 
 # --- uživatelé (UZIVATEL_EDIT) ---------------------------------------------------------------------
@@ -107,61 +113,91 @@ def over_kontext(spoj: Spojeni, kdo: Kontext) -> Kontext | None:
 
 @cteni
 def seznam_uzivatelu(spoj: Spojeni, filtr: UzivateleFiltr) -> Strana[UzivatelRadek]:
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    hledat = (filtr.hledat or "").casefold()
-    radky = [u for u in ukazky.UZIVATELE.values()
-             if hledat in f"{u.osobni_cislo} {u.cele_jmeno}".casefold()
-             and filtr.role_id in (None, u.role_id) and (filtr.aktivni is None or u.aktivni == filtr.aktivni)]
-    return Strana[UzivatelRadek](polozky=radky, strana=filtr.strana, velikost=filtr.velikost, celkem=len(radky))
+    """Jménem, příjmením ani osobním číslem se nedá zjistit cokoliv citlivého – PIN a karta se nečtou."""
+    radky, celkem = repozitar.seznam_uzivatelu(spoj, hledat=filtr.hledat, role_id=filtr.role_id,
+                                               aktivni=filtr.aktivni, strana=filtr.strana,
+                                               velikost=filtr.velikost)
+    return Strana[UzivatelRadek](polozky=[_uzivatel(radek) for radek in radky], strana=filtr.strana,
+                                 velikost=filtr.velikost, celkem=celkem)
 
 
 @transakce("UZIVATEL_ZALOZENI")
 def zaloz_uzivatele(spoj: Spojeni, vstup: NovyUzivatelVstup, kdo: Kontext) -> UzivatelRadek:
-    """Chyby: VALIDATION_ERROR (osobní číslo, PIN), ALREADY_EXISTS (osobní číslo nebo karta), NOT_FOUND (role)."""
-    from . import ukazky  # KOSTRA (fáze 0)
-
+    """PIN se ukládá jen jako hash. Chyby: VALIDATION_ERROR (osobní číslo, PIN),
+    ALREADY_EXISTS (osobní číslo nebo karta), NOT_FOUND (role)."""
     cislo = domena.normalizuj_osobni_cislo(vstup.osobni_cislo)
     if vstup.pin is not None:
-        domena.over_pin(vstup.pin.get_secret_value())     # fáze 1: PinHash = domena.zahashuj_pin(...)
-    role = _nacti_roli(vstup.role_id)
-    if any(u.osobni_cislo == cislo for u in ukazky.UZIVATELE.values()):
+        domena.over_pin(vstup.pin.get_secret_value())
+    role = _nacti_roli(spoj, vstup.role_id)
+    if repozitar.existuje_osobni_cislo(spoj, cislo):
         raise AppError("ALREADY_EXISTS", f"Uživatel s osobním číslem {cislo} už existuje.")
-    return UzivatelRadek(uzivatel_id=NOVE_ID, osobni_cislo=cislo, jmeno=vstup.jmeno, prijmeni=vstup.prijmeni,
-                         cele_jmeno=domena.cele_jmeno(vstup.jmeno, vstup.prijmeni), role_id=role.role_id,
-                         kod_role=role.kod_role, ma_pin=vstup.pin is not None, ma_kartu=vstup.kod_karty is not None,
-                         aktivni=True)
+    karta = _kod_karty(vstup.kod_karty)
+    if karta is not None and repozitar.existuje_karta(spoj, karta):
+        raise AppError("ALREADY_EXISTS", "Kartu s tímto kódem už má jiný uživatel.")
+    uzivatel_id = repozitar.vloz_uzivatele(
+        spoj, osobni_cislo=cislo, jmeno=vstup.jmeno, prijmeni=vstup.prijmeni, role_id=role.role_id,
+        pin_hash=domena.zahashuj_pin(vstup.pin.get_secret_value()) if vstup.pin is not None else None,
+        kod_karty=karta)
+    zmeny = [("Jmeno", None, vstup.jmeno), ("Prijmeni", None, vstup.prijmeni), ("RoleID", None, role.kod_role)]
+    if vstup.pin is not None:
+        zmeny.append(("PinHash", None, ZMENENO))
+    if karta is not None:
+        zmeny.append(("KodKarty", None, ZMENENO))
+    _zaloguj(spoj, kdo, "UZIVATEL", uzivatel_id, zmeny, duvod=None)
+    return _nacti_uzivatele(spoj, uzivatel_id)
 
 
 @transakce("UZIVATEL_ZMENA")
 def zmen_uzivatele(spoj: Spojeni, uzivatel_id: int, vstup: ZmenaUzivateleVstup, kdo: Kontext) -> UzivatelRadek:
     """Audit u karty zapíše jen „změněno“, nikdy hodnotu. Chyby: NOT_FOUND (uživatel, role), ALREADY_EXISTS (karta)."""
-    uzivatel = _nacti_uzivatele(uzivatel_id)
+    puvodni = _nacti_uzivatele(spoj, uzivatel_id)
     zmena = vstup.zmenena_pole()
-    if "role_id" in zmena:
-        role = _nacti_roli(zmena["role_id"])
-        zmena["kod_role"] = role.kod_role
+    role = _nacti_roli(spoj, zmena["role_id"]) if "role_id" in zmena else None
+    karta = _kod_karty(zmena["kod_karty"]) if "kod_karty" in zmena else None
+    if karta is not None and repozitar.existuje_karta(spoj, karta, krome_id=uzivatel_id):
+        raise AppError("ALREADY_EXISTS", "Kartu s tímto kódem už má jiný uživatel.")
+    jmeno = zmena.get("jmeno", puvodni.jmeno)
+    prijmeni = zmena.get("prijmeni", puvodni.prijmeni)
+    zmeny: list[tuple[str, Any, Any]] = []
+    if "jmeno" in zmena:
+        zmeny.append(("Jmeno", puvodni.jmeno, jmeno))
+    if "prijmeni" in zmena:
+        zmeny.append(("Prijmeni", puvodni.prijmeni, prijmeni))
+    if role is not None:
+        zmeny.append(("RoleID", puvodni.kod_role, role.kod_role))
     if "kod_karty" in zmena:
-        zmena["ma_kartu"] = zmena.pop("kod_karty") is not None
-    novy = uzivatel.model_copy(update=zmena)
-    return novy.model_copy(update={"cele_jmeno": domena.cele_jmeno(novy.jmeno, novy.prijmeni)})
+        zmeny.append(("KodKarty", ZMENENO if puvodni.ma_kartu else None, ZMENENO if karta is not None else None))
+    repozitar.zmen_kmenova_data(spoj, uzivatel_id, jmeno=jmeno, prijmeni=prijmeni,
+                                role_id=role.role_id if role is not None else puvodni.role_id)
+    if "kod_karty" in zmena:
+        repozitar.nastav_kartu(spoj, uzivatel_id, karta)
+    _zaloguj(spoj, kdo, "UZIVATEL", uzivatel_id, zmeny, vstup.duvod)
+    return _nacti_uzivatele(spoj, uzivatel_id)
 
 
 @transakce("UZIVATEL_DEAKTIVACE")
 def deaktivuj_uzivatele(spoj: Spojeni, uzivatel_id: int, vstup: DuvodVstup, kdo: Kontext) -> UzivatelRadek:
     """Vyřazený uživatel se nepřihlásí a jeho běžící session přestane platit při dalším požadavku
-    (hák over_kontext). Chyby: NOT_FOUND, VALIDATION_ERROR (sám sebe)."""
-    uzivatel = _nacti_uzivatele(uzivatel_id)
+    (hák over_kontext). Chyby: NOT_FOUND, VALIDATION_ERROR (sám sebe, poslední aktivní správce)."""
+    uzivatel = _nacti_uzivatele(spoj, uzivatel_id)
     domena.over_deaktivaci(uzivatel_id, kdo.uzivatel_id)
-    return uzivatel.model_copy(update={"aktivni": False})
+    if uzivatel.aktivni:
+        if uzivatel.kod_role == domena.ROLE_SPRAVCE:
+            domena.over_posledniho_spravce(repozitar.pocet_activnich_spravcu(spoj, domena.ROLE_SPRAVCE))
+        repozitar.deaktivuj_uzivatele(spoj, uzivatel_id)
+        _zaloguj(spoj, kdo, "UZIVATEL", uzivatel_id, [("Aktivni", True, False)], vstup.duvod)
+    return _nacti_uzivatele(spoj, uzivatel_id)
 
 
 @transakce("UZIVATEL_PIN")
 def nastav_pin(spoj: Spojeni, uzivatel_id: int, vstup: ResetPinuVstup, kdo: Kontext) -> UzivatelRadek:
     """Správce nastaví nový PIN (sdělí ho uživateli osobně). Audit bez hodnoty. Chyby: NOT_FOUND, VALIDATION_ERROR."""
-    uzivatel = _nacti_uzivatele(uzivatel_id)
+    uzivatel = _nacti_uzivatele(spoj, uzivatel_id)
     domena.over_pin(vstup.novy_pin.get_secret_value(), pole="novyPin")
-    return uzivatel.model_copy(update={"ma_pin": True})
+    repozitar.nastav_pin_hash(spoj, uzivatel_id, domena.zahashuj_pin(vstup.novy_pin.get_secret_value()))
+    _zaloguj(spoj, kdo, "UZIVATEL", uzivatel_id, [("PinHash", ZMENENO if uzivatel.ma_pin else None, ZMENENO)],
+             vstup.duvod)
+    return _nacti_uzivatele(spoj, uzivatel_id)
 
 
 # --- role (UZIVATEL_EDIT) ------------------------------------------------------------------------
@@ -169,9 +205,7 @@ def nastav_pin(spoj: Spojeni, uzivatel_id: int, vstup: ResetPinuVstup, kdo: Kont
 
 @cteni
 def seznam_roli(spoj: Spojeni) -> Seznam[RoleRadek]:
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    return Seznam[RoleRadek](polozky=ukazky.ROLE)
+    return Seznam[RoleRadek](polozky=_role_s_opravnenimi(repozitar.seznam_roli(spoj)))
 
 
 @transakce("ROLE_ZMENA")
@@ -180,14 +214,25 @@ def zmen_roli(spoj: Spojeni, role_id: int, vstup: ZmenaRoleVstup, kdo: Kontext) 
 
     Chyby: NOT_FOUND, VALIDATION_ERROR (neznámý kód, ADMIN bez UZIVATEL_EDIT).
     """
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    role = _nacti_roli(role_id)
+    role = _nacti_roli(spoj, role_id)
     zmena = vstup.zmenena_pole()
+    zmeny: list[tuple[str, Any, Any]] = []
+    if "nazev" in zmena:
+        zmeny.append(("NazevRole", role.nazev, zmena["nazev"]))
+    if "popis" in zmena:
+        zmeny.append(("Popis", role.popis, zmena["popis"]))
+    kodu: list[str] | None = None
     if "opravneni" in zmena:
-        zmena["opravneni"] = domena.over_opravneni(zmena["opravneni"], ukazky.ZNAMA_OPRAVNENI)
-        domena.over_zmenu_role(role.kod_role, zmena["opravneni"])
-    return role.model_copy(update=zmena)
+        kodu = domena.over_opravneni(zmena["opravneni"], repozitar.znama_opravneni(spoj))
+        domena.over_zmenu_role(role.kod_role, kodu)
+        zmeny += [("RoleOpravneni", None, kod) for kod in sorted(set(kodu) - set(role.opravneni))]
+        zmeny += [("RoleOpravneni", kod, None) for kod in sorted(set(role.opravneni) - set(kodu))]
+    if "nazev" in zmena or "popis" in zmena:
+        repozitar.zmen_roli(spoj, role_id, nazev=zmena.get("nazev", role.nazev), popis=zmena.get("popis", role.popis))
+    if kodu is not None and kodu != role.opravneni:
+        repozitar.nastav_opravneni_role(spoj, role_id, kodu)
+    _zaloguj(spoj, kdo, "ROLE", role_id, zmeny, vstup.duvod)
+    return _nacti_roli(spoj, role_id)
 
 
 # --- terminály (UZIVATEL_EDIT) ---------------------------------------------------------------------
@@ -195,67 +240,114 @@ def zmen_roli(spoj: Spojeni, role_id: int, vstup: ZmenaRoleVstup, kdo: Kontext) 
 
 @cteni
 def seznam_terminalu(spoj: Spojeni) -> Seznam[TerminalRadek]:
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    return Seznam[TerminalRadek](polozky=ukazky.TERMINALY)
+    return Seznam[TerminalRadek](polozky=[_terminal(radek) for radek in repozitar.seznam_terminalu(spoj)])
 
 
 @transakce("TERMINAL_ZALOZENI")
 def zaloz_terminal(spoj: Spojeni, vstup: NovyTerminalVstup, kdo: Kontext) -> TerminalRadek:
-    """Chyby: VALIDATION_ERROR (kód), ALREADY_EXISTS. Pracoviště ověří FK (fáze 1: v_Misto / pohled C)."""
-    from . import ukazky  # KOSTRA (fáze 0)
-
+    """Chyby: VALIDATION_ERROR (kód, neexistující pracoviště), ALREADY_EXISTS (kód terminálu)."""
     kod = domena.normalizuj_kod_terminalu(vstup.kod_terminalu)
-    if any(t.kod_terminalu == kod for t in ukazky.TERMINALY):
+    if repozitar.existuje_terminal(spoj, kod):
         raise AppError("ALREADY_EXISTS", f"Terminál {kod} už existuje.")
-    return TerminalRadek(terminal_id=NOVE_ID, kod_terminalu=kod, nazev=vstup.nazev,
-                         pracoviste_id=vstup.pracoviste_id, aktivni=True)
+    with repozitar.cizi_id("pracovisteId", "Pracoviště"):
+        terminal_id = repozitar.vloz_terminal(spoj, kod_terminalu=kod, nazev=vstup.nazev,
+                                              pracoviste_id=vstup.pracoviste_id)
+    _zaloguj(spoj, kdo, "TERMINAL", terminal_id,
+             [("KodTerminalu", None, kod), ("NazevTerminalu", None, vstup.nazev),
+              ("PracovisteID", None, vstup.pracoviste_id)], duvod=None)
+    return _nacti_terminal(spoj, terminal_id)
 
 
 @transakce("TERMINAL_ZMENA")
 def zmen_terminal(spoj: Spojeni, terminal_id: int, vstup: ZmenaTerminaluVstup, kdo: Kontext) -> TerminalRadek:
-    return _nacti_terminal(terminal_id).model_copy(update=vstup.zmenena_pole())
+    """Chyby: NOT_FOUND, VALIDATION_ERROR (neexistující pracoviště)."""
+    terminal = _nacti_terminal(spoj, terminal_id)
+    zmena = vstup.zmenena_pole()
+    zmeny: list[tuple[str, Any, Any]] = []
+    for pole, sloupec in (("nazev", "NazevTerminalu"), ("pracoviste_id", "PracovisteID"), ("aktivni", "Aktivni")):
+        if pole in zmena:
+            zmeny.append((sloupec, getattr(terminal, pole), zmena[pole]))
+    with repozitar.cizi_id("pracovisteId", "Pracoviště"):
+        repozitar.zmen_terminalu(spoj, terminal_id, nazev=zmena.get("nazev", terminal.nazev),
+                                 pracoviste_id=zmena.get("pracoviste_id", terminal.pracoviste_id),
+                                 aktivni=bool(zmena.get("aktivni", terminal.aktivni)))
+    _zaloguj(spoj, kdo, "TERMINAL", terminal_id, zmeny, vstup.duvod)
+    return _nacti_terminal(spoj, terminal_id)
 
 
 # --- pomocné -------------------------------------------------------------------------------------
 
 
-def _terminal_pri_prihlaseni(kod_terminalu: str | None) -> TerminalRadek | None:
+def _terminal_pri_prihlaseni(spoj: Spojeni, kod_terminalu: str | None) -> TerminalRadek | None:
     """Terminál z PDA: musí být evidovaný a aktivní. Kód terminálu není tajný, chyba ho smí pojmenovat."""
     if kod_terminalu is None:
         return None
-    from . import ukazky  # KOSTRA (fáze 0)
-
     kod = domena.normalizuj_kod_terminalu(kod_terminalu)
-    terminal = next((t for t in ukazky.TERMINALY if t.kod_terminalu == kod and t.aktivni), None)
-    if terminal is None:
+    radek = repozitar.terminal_podle_kodu(spoj, kod)
+    if radek is None or not radek["Aktivni"]:
         raise chyba_vstupu(f"Terminál {kod} není evidovaný nebo je vyřazený. Kontaktujte správce.",
                            {"kodTerminalu": "Neznámý nebo vyřazený terminál."})
-    return terminal
+    return _terminal(radek)
 
 
-def _nacti_uzivatele(uzivatel_id: int) -> UzivatelRadek:
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    uzivatel = ukazky.UZIVATELE.get(uzivatel_id)
-    if uzivatel is None:
+def _nacti_uzivatele(spoj: Spojeni, uzivatel_id: int) -> UzivatelRadek:
+    radek = repozitar.uzivatel_podle_id(spoj, uzivatel_id)
+    if radek is None:
         raise AppError("NOT_FOUND", f"Uživatel {uzivatel_id} neexistuje.")
-    return uzivatel
+    return _uzivatel(radek)
 
 
-def _nacti_roli(role_id: int) -> RoleRadek:
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    for role in ukazky.ROLE:
-        if role.role_id == role_id:
-            return role
-    raise AppError("NOT_FOUND", f"Role {role_id} neexistuje.")
+def _nacti_roli(spoj: Spojeni, role_id: int) -> RoleRadek:
+    radky = repozitar.role_podle_id(spoj, role_id)
+    if not radky:
+        raise AppError("NOT_FOUND", f"Role {role_id} neexistuje.")
+    return _role_s_opravnenimi(radky)[0]
 
 
-def _nacti_terminal(terminal_id: int) -> TerminalRadek:
-    from . import ukazky  # KOSTRA (fáze 0)
+def _nacti_terminal(spoj: Spojeni, terminal_id: int) -> TerminalRadek:
+    radek = repozitar.terminal_podle_id(spoj, terminal_id)
+    if radek is None:
+        raise AppError("NOT_FOUND", f"Terminál {terminal_id} neexistuje.")
+    return _terminal(radek)
 
-    for terminal in ukazky.TERMINALY:
-        if terminal.terminal_id == terminal_id:
-            return terminal
-    raise AppError("NOT_FOUND", f"Terminál {terminal_id} neexistuje.")
+
+def _kod_karty(karta: SecretStr | None) -> str | None:
+    """Karta se mění jen jako celek (nastavit/vymazat); její kód se nikam nevypisuje ani neaudituje."""
+    return karta.get_secret_value() if karta is not None else None
+
+
+def _zaloguj(spoj: Spojeni, kdo: Kontext, typ_objektu: str, objekt_id: int,
+             zmeny: list[tuple[str, Any, Any]], duvod: str | None) -> None:
+    """Do auditu jeden řádek na každou změněnou vlastnost; důvod změny jde do poznámky (kap. 25)."""
+    for pole, stara, nova in zmeny:
+        audit.zapis(spoj, kdo, typ_objektu, objekt_id, pole, stara, nova, duvod)
+
+
+def _uzivatel(radek: dict) -> UzivatelRadek:
+    return UzivatelRadek(uzivatel_id=int(radek["UzivatelID"]), osobni_cislo=radek["OsobniCislo"],
+                         jmeno=radek["Jmeno"], prijmeni=radek["Prijmeni"],
+                         cele_jmeno=domena.cele_jmeno(radek["Jmeno"], radek["Prijmeni"]),
+                         role_id=int(radek["RoleID"]), kod_role=radek["KodRole"],
+                         ma_pin=bool(radek["MaPin"]), ma_kartu=bool(radek["MaKartu"]),
+                         aktivni=bool(radek["Aktivni"]))
+
+
+def _role_s_opravnenimi(radky: list[dict]) -> list[RoleRadek]:
+    """Řádky role × oprávnění seskupené na jeden řádek kontraktu pro každou roli."""
+    zaklady: dict[int, dict] = {}
+    opravneni: dict[int, list[str]] = {}
+    for radek in radky:
+        role_id = int(radek["RoleID"])
+        zaklady.setdefault(role_id, radek)
+        if radek["KodOpravneni"]:
+            opravneni.setdefault(role_id, []).append(radek["KodOpravneni"])
+    return [RoleRadek(role_id=role_id, kod_role=radek["KodRole"], nazev=radek["NazevRole"],
+                      popis=radek["Popis"], opravneni=sorted(opravneni.get(role_id, [])),
+                      aktivni=bool(radek["Aktivni"]))
+            for role_id, radek in zaklady.items()]
+
+
+def _terminal(radek: dict) -> TerminalRadek:
+    return TerminalRadek(terminal_id=int(radek["TerminalID"]), kod_terminalu=radek["KodTerminalu"],
+                         nazev=radek["NazevTerminalu"], pracoviste_id=radek["PracovisteID"],
+                         aktivni=bool(radek["Aktivni"]))

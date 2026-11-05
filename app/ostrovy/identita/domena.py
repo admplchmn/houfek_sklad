@@ -69,9 +69,16 @@ def over_zmenu_role(kod_role: str, opravneni: Iterable[str]) -> None:
 
 
 def over_deaktivaci(uzivatel_id: int, kdo_uzivatel_id: int) -> None:
-    """Nikdo nevyřadí sám sebe (přišel by o přístup uprostřed práce). Poslední aktivní ADMIN: fáze 1."""
+    """Nikdo nevyřadí sám sebe (přišel by o přístup uprostřed práce)."""
     if uzivatel_id == kdo_uzivatel_id:
         raise chyba_vstupu("Sami sebe vyřadit nemůžete. Požádejte jiného správce.")
+
+
+def over_posledniho_spravce(pocet_activnich: int) -> None:
+    """Poslední aktivní ADMIN se nesmí vyřadit: bez něj by se nedaly spravovat role ani uživatelé."""
+    if pocet_activnich <= 1:
+        raise chyba_vstupu("Nemůžete vyřadit posledního aktivního správce. Předejte nejprve správu "
+                           "jinému uživateli.")
 
 
 # --- hash PINu (argon2, docs/adr/0007) ------------------------------------------------------------
