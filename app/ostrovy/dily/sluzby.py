@@ -111,7 +111,7 @@ def deaktivuj_dil(spoj: Spojeni, dil_id: int, vstup: DuvodVstup, kdo: Kontext) -
     if repozitar.ma_obsah(spoj, dil_id):
         raise AppError("NOT_EMPTY", "Díl má na pozici obsah, nejde vyřadit.")
     repozitar.nastav_pole_dilu(spoj, dil_id, {"Aktivni": False})
-    zapis(spoj, kdo, "DIL", dil_id, "Aktivni", 1, 0, vstup.duvod)      # BIT
+    zapis(spoj, kdo, "DIL", dil_id, "Aktivni", True, False, vstup.duvod)   # BIT se audituje jako bool (ostrov B)
     return _nacti_dil(spoj, dil_id)
 
 
@@ -186,7 +186,7 @@ def deaktivuj_polozku_ciselniku(spoj: Spojeni, typ: str, polozka_id: int, vstup:
     _over_typ(typ)
     _polozka_radek(spoj, typ, polozka_id)
     repozitar.nastav_pole_polozky(spoj, typ, polozka_id, {"Aktivni": False})
-    zapis(spoj, kdo, _TYP_OBJEKTU_CISELNIKU[typ], polozka_id, "Aktivni", 1, 0, vstup.duvod)   # BIT
+    zapis(spoj, kdo, _TYP_OBJEKTU_CISELNIKU[typ], polozka_id, "Aktivni", True, False, vstup.duvod)
     return _polozka(_polozka_radek(spoj, typ, polozka_id))
 
 

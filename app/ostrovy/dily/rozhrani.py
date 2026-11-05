@@ -1,22 +1,24 @@
 """VEŘEJNÉ ROZHRANÍ ostrova D – Díly a číselníky (sekce 7.4).
 
 CO: kmenová data dílu, která sklad potřebuje. Normalizace identifikačního čísla je hotová
-(jedna pro hledání, import i kontrolu duplicity). Fáze 1: `zaloz_dil` už pracuje nad DB,
-čtecí funkce vracejí stále vzorová data – jejich SQL je hotové a otestované v `repozitar.py`
-a zapojí se ve fázi 2 (aby fáze 1 nijak nezměnila chování ostatních ostrovů).
+(jedna pro hledání, import i kontrolu duplicity). Všechny funkce pracují nad DB; vzorová data
+(`ukazky`) slouží jen tam, kde SQL Server není – vývoj a testy bez DB (`spoj` je None nebo
+sqlite), stejný vzor jako ostrov B.
 """
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 
 from app.platforma.audit import zapis
 from app.platforma.chyby import AppError
 from app.platforma.db import Spojeni
-from app.platforma.typy import Kontext, PolozkaCiselniku, PotrebaMista
+from app.platforma.typy import Kontext, PolozkaCiselniku, PotrebaMista, Rozmer
 
 from . import domena, repozitar
+from .kontrakty import TYPY_CISELNIKU
 
 
 @dataclass(frozen=True)
@@ -55,9 +57,15 @@ def normalizuj_identifikacni_cislo(text: str) -> str:
 
 def najdi_dil(spoj: Spojeni, identifikacni_cislo: str) -> DilInfo:
     """Aktivní díl podle identifikačního čísla (normalizuje se). Chyby: NOT_FOUND."""
+    cislo = normalizuj_identifikacni_cislo(identifikacni_cislo)
+    if spoj is not None and spoj.dialekt == "mssql":
+        radek = repozitar.najdi_dil_podle_cisla(spoj, cislo, jen_aktivni=True)
+        if radek is None:
+            raise AppError("NOT_FOUND", f"Díl {cislo} neexistuje nebo není aktivní.")
+        return _dil_info(radek)
+
     from . import ukazky  # KOSTRA (fáze 0)
 
-    cislo = normalizuj_identifikacni_cislo(identifikacni_cislo)
     for dil in ukazky.DIL_INFO.values():
         if dil.identifikacni_cislo == cislo and dil.aktivni:
             return dil
@@ -66,6 +74,9 @@ def najdi_dil(spoj: Spojeni, identifikacni_cislo: str) -> DilInfo:
 
 def nacti_dily(spoj: Spojeni, dil_ids: list[int]) -> dict[int, DilInfo]:
     """Hromadné načtení podle ID (i neaktivní); neexistující ve výsledku chybí."""
+    if spoj is not None and spoj.dialekt == "mssql":
+        return {radek["DilID"]: _dil_info(radek) for radek in repozitar.nacti_dily_podle_id(spoj, dil_ids)}
+
     from . import ukazky  # KOSTRA (fáze 0)
 
     return {i: ukazky.DIL_INFO[i] for i in dil_ids if i in ukazky.DIL_INFO}
@@ -77,9 +88,13 @@ def hledej_dily(spoj: Spojeni, text: str, *, material: str | None = None, tloust
 
     Jen aktivní díly, seřazené podle identifikačního čísla; filtry jsou kódy číselníků.
     """
+    hledany = normalizuj_identifikacni_cislo(text)
+    if spoj is not None and spoj.dialekt == "mssql":
+        return [_dil_info(radek) for radek in repozitar.hledani_dilu(
+            spoj, hledany, material=material, tloustka_mm=tloustka_mm, prvni_operace=prvni_operace, limit=limit)]
+
     from . import ukazky  # KOSTRA (fáze 0)
 
-    hledany = normalizuj_identifikacni_cislo(text)
     nalezene = [d for d in ukazky.DIL_INFO.values()
                 if d.aktivni and (hledany in d.identifikacni_cislo or hledany.casefold() in (d.nazev or "").casefold())
                 and material in (None, d.material) and tloustka_mm in (None, d.tloustka_mm)
@@ -89,6 +104,10 @@ def hledej_dily(spoj: Spojeni, text: str, *, material: str | None = None, tloust
 
 def nacti_ciselniky(spoj: Spojeni) -> dict[str, tuple[PolozkaCiselniku, ...]]:
     """Číselníky dílů pro filtry: klíče "materialy", "tloustky", "operace" (i vyřazené položky)."""
+    if spoj is not None and spoj.dialekt == "mssql":
+        return {typ: tuple(PolozkaCiselniku(p["id"], p["kod"], p["nazev"], bool(p["aktivni"]))
+                           for p in repozitar.polozky_ciselniku(spoj, typ)) for typ in TYPY_CISELNIKU}
+
     from . import ukazky  # KOSTRA (fáze 0)
 
     return {typ: tuple(PolozkaCiselniku(p.id, p.kod, p.nazev, p.aktivni) for p in polozky)
@@ -122,6 +141,18 @@ def zaloz_dil(spoj: Spojeni, kdo: Kontext, dil: NovyDil) -> int:
                                 poznamka=dil.poznamka)
     zapis(spoj, kdo, "DIL", dil_id, "IdentifikacniCislo", None, cislo)
     return dil_id
+
+
+def _dil_info(radek: dict[str, Any]) -> DilInfo:
+    """Řádek dotazu na Dil → DilInfo; velikost a rozměr se skládají na potřebu místa."""
+    delka, hloubka = radek["PotrebnaDelkaMM"], radek["PotrebnaHloubkaMM"]
+    rozmer = Rozmer(delka, hloubka) if delka is not None and hloubka is not None else None
+    potreba = PotrebaMista(radek["Velikost"], rozmer) if radek["Velikost"] else None
+    return DilInfo(
+        dil_id=radek["DilID"], identifikacni_cislo=radek["IdentifikacniCislo"], nazev=radek["NazevDilu"],
+        material=radek["KodMaterialu"], tloustka_mm=radek["TloustkaMM"], prvni_operace=radek["KodOperace"],
+        standardni_davka_ks=radek["StandardniDavkaKs"], potreba=potreba,
+        vault_url=radek["VaultVykresURL"], aktivni=bool(radek["Aktivni"]))
 
 
 def _id_velikosti(spoj: Spojeni, kod: str | None) -> int | None:
