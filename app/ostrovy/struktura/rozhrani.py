@@ -4,8 +4,9 @@ KDE: každé fyzické místo, jeho kód, velikost a blokace. Jediné místo s fo
 (parser i tisk štítků) a se zámky pozic.
 
 Čisté funkce (rozloz_kod, vejde_se, stav_boxu) jsou hotové podle analýzy 5.1 a 8.1.
-Funkce nad DB jsou ve fázi 0 kostra se vzorovými daty (import ukazky uvnitř funkce),
-kromě zamkni_mista, která je protokol a je hotová.
+Funkce nad DB jsou ve fázi 1 stále kostra se vzorovými daty (import ukazky uvnitř funkce),
+aby testy ostatních ostrovů běžely nad stabilními vzorky; skutečné SQL už mají zamkni_mista
+(protokol) a zakládání pracoviště, regálu, úrovně a boxu – to je hotové přes repozitar.py.
 """
 from __future__ import annotations
 
@@ -16,7 +17,7 @@ from app.platforma.chyby import AppError
 from app.platforma.db import Spojeni, po_davkach
 from app.platforma.typy import Kontext, PolozkaCiselniku, PotrebaMista, Rozmer
 
-from . import domena
+from . import domena, repozitar
 
 # --- DTO -------------------------------------------------------------------------------
 
@@ -394,18 +395,18 @@ def _misto_podle_kodu(kod_mista: str | None) -> MistoInfo:
 
 def zaloz_pracoviste(spoj: Spojeni, kdo: Kontext, kod_pracoviste: str, nazev: str | None) -> int:
     """Vrací PracovisteID. Chyby: ALREADY_EXISTS, VALIDATION_ERROR."""
-    raise NotImplementedError("Ostrov C – fáze 1")
+    return repozitar.zaloz_pracoviste(spoj, kod_pracoviste, nazev)
 
 
 def zaloz_regal(spoj: Spojeni, kdo: Kontext, pracoviste_id: int, kod_regalu: str, nazev: str | None) -> int:
     """Vrací RegalID. Chyby: ALREADY_EXISTS, NOT_FOUND."""
-    raise NotImplementedError("Ostrov C – fáze 1")
+    return repozitar.zaloz_regal(spoj, pracoviste_id, kod_regalu, nazev)
 
 
 def zaloz_uroven(spoj: Spojeni, kdo: Kontext, regal_id: int, kod_urovne: str, poradi: int,
                  delka_plochy_mm: float, hloubka_plochy_mm: float) -> int:
     """Vrací UrovenID. Chyby: ALREADY_EXISTS, NOT_FOUND, VALIDATION_ERROR."""
-    raise NotImplementedError("Ostrov C – fáze 1")
+    return repozitar.zaloz_uroven(spoj, regal_id, kod_urovne, poradi, delka_plochy_mm, hloubka_plochy_mm)
 
 
 def zaloz_box(spoj: Spojeni, kdo: Kontext, uroven_id: int, poradi: int | None, typ_boxu: str,
@@ -415,4 +416,4 @@ def zaloz_box(spoj: Spojeni, kdo: Kontext, uroven_id: int, poradi: int | None, t
     poradi None = na konec úrovně; kod_boxu None = další volné číslo řady (11.2.1).
     Chyby: ALREADY_EXISTS, NOT_FOUND, VALIDATION_ERROR.
     """
-    raise NotImplementedError("Ostrov C – fáze 1")
+    return repozitar.zaloz_box(spoj, uroven_id, poradi, typ_boxu, kod_cleneni, delka_mm, hloubka_mm, kod_boxu)

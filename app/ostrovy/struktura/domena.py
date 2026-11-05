@@ -118,6 +118,20 @@ def cislo_boxu(kod: str) -> int:
     return int(kod[-3:])
 
 
+def over_kod_boxu(typ_boxu: str, kod_pracoviste: str, kod: str) -> str:
+    """Zadaný kód boxu (štítek) musí patřit do řady typu a pracoviště (11.2); vrací normalizovaný kód.
+
+        "bple 037" + DYN/PLE → "BPLE037"
+    Kód jiné řady nebo jiného pracoviště je neplatný kód, ne kolize.
+    Chyby: VALIDATION_ERROR.
+    """
+    text = _text(kod)
+    if not re.fullmatch(rf"{rada_boxu(typ_boxu, kod_pracoviste)}[0-9]{{3}}", text):
+        raise _chyba("kodBoxu", f"Kód boxu musí mít podobu {rada_boxu(typ_boxu, kod_pracoviste)}001 až "
+                                f"{rada_boxu(typ_boxu, kod_pracoviste)}999.")
+    return kod_boxu(typ_boxu, kod_pracoviste, cislo_boxu(text))
+
+
 def dalsi_cislo_boxu(pouzita: Iterable[int]) -> int:
     """Další číslo řady = nejvyšší použité + 1, počítají se i vyřazené boxy (kód ze štítku se nikdy
     nevydá znovu, UQ_Box_KodBoxu). Mezery v řadě se samy nedoplňují – volné číslo lze zadat ručně.
