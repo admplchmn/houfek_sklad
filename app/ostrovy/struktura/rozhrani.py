@@ -4,9 +4,8 @@ KDE: každé fyzické místo, jeho kód, velikost a blokace. Jediné místo s fo
 (parser i tisk štítků) a se zámky pozic.
 
 Čisté funkce (rozloz_kod, vejde_se, stav_boxu) jsou hotové podle analýzy 5.1 a 8.1.
-Funkce nad DB jsou ve fázi 1 stále kostra se vzorovými daty (import ukazky uvnitř funkce),
-aby testy ostatních ostrovů běžely nad stabilními vzorky; skutečné SQL už mají zamkni_mista
-(protokol) a zakládání pracoviště, regálu, úrovně a boxu – to je hotové přes repozitar.py.
+Funkce nad DB volají repozitar.py, jakmile je spojení nad SQL Serverem; bez spojení nebo
+mimo mssql zůstávají vzorová data z ukazky.py, aby testy kostry i ostrovů běžely bez databáze.
 """
 from __future__ import annotations
 
@@ -216,12 +215,14 @@ def zamkni_mista(spoj: Spojeni, vnitrni_pozice_ids: list[int]) -> None:
         raise AppError("NOT_FOUND", "Některá pozice neexistuje.")
 
 
-# --- funkce nad DB (fáze 0: kostra se vzorovými daty) ----------------------------------------
+# --- funkce nad DB (nad SQL Serverem volají repozitar, jinak vzorová data) --------------------
 # Rozbor kódu, kontrola úrovně skenu a dlouhé adresy jsou hotové (_kod_pozice, _over_dlouhou_adresu);
-# kostra je jen hledání ve vzorových datech místo dotazu na v_Misto.
+# vzorová data jsou jen hledání v ukazky místo dotazu na v_Misto – pro běh bez databáze.
 
 def najdi_objekt(spoj: Spojeni, kod: str) -> NalezenyObjekt:
     """Přeloží kód regálu, boxu nebo pozice na objekt (pro sken). Chyby: INVALID_BARCODE, NOT_FOUND."""
+    if spoj is not None and spoj.dialekt == "mssql":
+        return repozitar.najdi_objekt(spoj, kod)
     rozlozeny = rozloz_kod(kod)
     if rozlozeny.typ == "TEXT":
         raise AppError("INVALID_BARCODE", f"Kód {rozlozeny.text!r} neodpovídá žádnému kódu skladu.")
@@ -248,6 +249,8 @@ def najdi_vnitrni_pozici(spoj: Spojeni, kod: str) -> MistoInfo:
 
     Chyby: INVALID_BARCODE, NOT_FOUND, WRONG_SCAN_LEVEL (naskenován celý box nebo regál).
     """
+    if spoj is not None and spoj.dialekt == "mssql":
+        return repozitar.najdi_vnitrni_pozici(spoj, kod)
     rozlozeny = _kod_pozice(kod)
     misto = _misto_podle_kodu(rozlozeny.kod_mista)
     if rozlozeny.kod_urovne is not None:
@@ -257,6 +260,8 @@ def najdi_vnitrni_pozici(spoj: Spojeni, kod: str) -> MistoInfo:
 
 def nacti_mista(spoj: Spojeni, vnitrni_pozice_ids: list[int]) -> dict[int, MistoInfo]:
     """Hromadné načtení míst podle ID; neaktivní nebo neexistující ve výsledku chybí."""
+    if spoj is not None and spoj.dialekt == "mssql":
+        return repozitar.nacti_mista(spoj, vnitrni_pozice_ids)
     from . import ukazky  # KOSTRA (fáze 0)
 
     return {i: ukazky.MISTA[i] for i in vnitrni_pozice_ids if i in ukazky.MISTA}
@@ -269,6 +274,8 @@ def kandidatni_mista_dyn(spoj: Spojeni, regal_id: int, velikost: str, *,
 
     cele_pracoviste=True: i z ostatních regálů pracoviště zvoleného regálu (Q-10). Chyby: NOT_FOUND (regál).
     """
+    if spoj is not None and spoj.dialekt == "mssql":
+        return repozitar.kandidatni_mista_dyn(spoj, regal_id, velikost, cele_pracoviste=cele_pracoviste)
     from . import ukazky  # KOSTRA (fáze 0)
 
     regal = next((r for r in ukazky.REGALY if r.regal_id == regal_id and r.aktivni), None)
@@ -289,6 +296,8 @@ def pozice_v_rozsahu(spoj: Spojeni, typ_rozsahu: str, cil_id: int | None) -> lis
     typ_rozsahu: FULL | PRAC | REGAL | UROVEN | BOX | POZICE (cil_id je ID podle typu, u FULL None).
     Chyby: VALIDATION_ERROR (neznámý typ, chybějící nebo přebývající cíl), NOT_FOUND.
     """
+    if spoj is not None and spoj.dialekt == "mssql":
+        return repozitar.pozice_v_rozsahu(spoj, typ_rozsahu, cil_id)
     if typ_rozsahu not in ROZSAHY_INVENTURY:
         raise AppError("VALIDATION_ERROR", f"Neznámý rozsah {typ_rozsahu!r}. Povolené: {', '.join(ROZSAHY_INVENTURY)}.")
     if (typ_rozsahu == "FULL") != (cil_id is None):
@@ -306,6 +315,8 @@ def pozice_v_rozsahu(spoj: Spojeni, typ_rozsahu: str, cil_id: int | None) -> lis
 
 def rozlozeni_urovne(spoj: Spojeni, uroven_id: int) -> RozlozeniUrovne:
     """Geometrie úrovně v mm pro SVG (pravidla 17.1). Chyby: NOT_FOUND."""
+    if spoj is not None and spoj.dialekt == "mssql":
+        return repozitar.rozlozeni_urovne(spoj, uroven_id)
     from . import ukazky  # KOSTRA (fáze 0)
 
     uroven = next((u for u in ukazky.UROVNE if u.uroven_id == uroven_id), None)
@@ -323,6 +334,8 @@ def rozlozeni_urovne(spoj: Spojeni, uroven_id: int) -> RozlozeniUrovne:
 
 def nacti_ciselniky(spoj: Spojeni) -> dict[str, tuple[PolozkaCiselniku, ...]]:
     """Číselníky struktury pro filtry: "pracoviste" (kód PLE, název) a "velikosti" (V1–V6)."""
+    if spoj is not None and spoj.dialekt == "mssql":
+        return repozitar.nacti_ciselniky(spoj)
     from . import ukazky  # KOSTRA (fáze 0)
 
     return {
