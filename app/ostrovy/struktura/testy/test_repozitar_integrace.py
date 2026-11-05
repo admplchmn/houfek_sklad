@@ -212,7 +212,7 @@ class TestZalozeniStruktury(ZakladStruktury):
         _, _, uroven_id, kod = self.nova_uroven()
         self.zaloz(uroven_id)
         stavy = self.spoj.hodnota("SELECT COUNT(*) FROM dbo.Pozice WHERE UrovenID = ?", uroven_id)
-        for chyba, parametry in [
+        for chyba, prepsat in [
             ("NOT_FOUND", dict(uroven_id=NEEXISTUJE)),
             ("NOT_FOUND", dict(cleneni="C8")),
             ("VALIDATION_ERROR", dict(typ_boxu="MIX")),
@@ -221,7 +221,8 @@ class TestZalozeniStruktury(ZakladStruktury):
             ("ALREADY_EXISTS", dict(kod_boxu=f"B{kod}001")),
             ("VALIDATION_ERROR", dict(poradi=9)),
         ]:
-            self.assertEqual(self.kod_chyby(self.zaloz, uroven_id, **parametry), chyba, parametry)
+            parametry = {"uroven_id": uroven_id} | prepsat
+            self.assertEqual(self.kod_chyby(self.zaloz, **parametry), chyba, prepsat)
         self.assertEqual(self.spoj.hodnota("SELECT COUNT(*) FROM dbo.Pozice WHERE UrovenID = ?", uroven_id), stavy)
         with self.assertRaises(AppError) as zachyceno:
             self.zaloz(uroven_id, rozmer=(0, -1))
