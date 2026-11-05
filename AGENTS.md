@@ -11,6 +11,7 @@ Platí pro každého, kdo mění kód v tomto repozitáři, ať je to člověk, 
 ## Hranice
 
 - Měníš jen složku svého ostrova `app/ostrovy/<ostrov>/`. Platformu (`app/platforma`), `app/ostrovy/__init__.py`, `sql/`, `kontrakty/` a `tests/` mění jen P1, ty mu pošli návrh.
+- Test v `tests/` nevolá HTTP endpointy ostrovů. Ty se mění s každou fází a nad sqlite kostrou ani nemusí fungovat; ostrov si je testuje ve `testy/` a nad SQL Serverem v `tests/integrace`.
 - Jiný ostrov voláš jen funkcemi z jeho `rozhrani.py` a cizí data čteš jen z pohledů `v_*`. Do cizích tabulek nepíšeš ani je nečteš.
 - Endpointy, modely v `kontrakty.py`, funkce v `rozhrani.py` a sloupce pohledů se jen přidávají. Přejmenování nebo odebrání odmítne kontrola kontraktů (P10).
 - Databáze PowerKey se zatím nepoužívá, ani pro testy. Napojení přijde později jako samostatné zadání.

@@ -18,7 +18,7 @@ Každý ostrov má jednoho vlastníka a vlastní složku. Kontrakty všech ostro
 |---|---|---|
 | Společný git repozitář a CI, které na každý pull request spustí `python -m nastroje.over_vse` | vedoucí rozhodne kde, P1 nastaví | bez toho nejde pracovat souběžně a pravidla ostrovů chrání jen automatická kontrola |
 | SQL Server pro testy: testovací server v Dockeru, `docker compose up -d` a `python -m nastroje.testovaci_db` ([vyvoj.md](vyvoj.md), sekce 1.1) | každý u sebe (Docker Desktop), připraveno 3. 11. | SQL ostrovů se testuje jen proti SQL Serveru ([ADR-0009](adr/0009-strategie-testu.md)); potřeba od prvního dne fáze 1 |
-| Vzorová data a izolace integračních testů: v testovací databázi stejný svět jako v `ukazky.py`, každý test začíná z čistých dat | P1 | E, F a G potřebují v testovací databázi řádky ostrovů C a D kvůli cizím klíčům |
+| Data pro integrační testy: do testovací databáze se nezakládá vzorový svět, řádky ostrovů C a D si každý test založí sám jejich funkcemi `zaloz_*` v transakci testu a na konci se vrátí zpět | P1 (harness), C a D (`zaloz_*`) | E, F a G potřebují řádky ostrovů C a D kvůli cizím klíčům; vlastní data dovolují testu běžet kdykoli a souběžně |
 | Otázky pro Sklad a Inventuru (Q-07 až Q-11, Q-13 až Q-17, Q-26): rozhodnout, nebo potvrdit výchozí řešení z analýzy | vedoucí s vlastníkem procesu | mění tvar příkazů E a F; do té doby E a F dělají části, kterých se otázky netýkají |
 
 B, C a D můžou začít hned, jakmile mají SQL Server: jejich SQL potřebuje jen vlastní tabulky.
@@ -44,7 +44,7 @@ Vlastníci jsou podle varianty pro 6 lidí. Varianty pro 4 a 5 lidí jsou v doku
 2. SQL patří do `repozitar.py`: jen parametry `?`, zápis jen do vlastních tabulek, cizí data jen z `v_*`.
 3. Vlastní služby (`sluzby.py`) napoj na repozitář hned. Endpointy se nemění.
 4. Funkce v `rozhrani.py`, které volají ostatní ostrovy:
-   - **Vracejí vzorová data?** Nech je tak celou fázi 1. Skutečnou verzi napiš do `repozitar.py` a otestuj ji. Ve fázi 2 (po bráně K2) ji z rozhraní zavoláš a podpis zůstane stejný. Ostatní tak celou fázi 1 pracují nad stabilními vzorovými daty a tvoje rozpracovaná verze je nerozbije.
+   - **Vracejí vzorová data?** Jakmile máš čtecí dotazy v `repozitar.py` hotové a otestované, zavolej je z `rozhrani.py` – podpis se nemění (rozhodnutí vedoucího 5. 11. 2026). Bez SQL Serveru, ať už je to sqlite kostra nebo `spoj` = `None`, ať funkce vrací dál vzorová data: ostatní tak mají stabilní vzorky i bez databáze a tvoje rozpracovaná verze je nerozbije.
    - **Vyvolají zatím `NotImplementedError`?** To jsou zápisy pro jiné ostrovy. Naprogramuj je ve fázi 1 jako první, protože na ně jiný ostrov čeká:
      - `zauctuj_korekci` (E → F);
      - `prirad_stat_misto` (E → H);
@@ -202,7 +202,7 @@ Vlastníci jsou podle varianty pro 6 lidí. Varianty pro 4 a 5 lidí jsou v doku
 
 1. **Brána K2:** každý ostrov má integrační testy svých operací a projde samostatně.
 2. **Fáze 2, zapojení** (koordinuje P1):
-   - vlastníci v `rozhrani.py` nahradí vzorová data voláním repozitáře;
+   - rozhraní už repozitář volá – vlastník ho napojil hned za svými čtecími dotazy ve fázi 1 (sekce 4, bod 4);
    - testy přes více ostrovů běží proti SQL Serveru;
    - scénáře T01–T33 se projdou přes Swagger.
 3. **Brána K3:** backend je hotový, scénáře i souběhové testy jsou zelené.

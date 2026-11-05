@@ -1,6 +1,6 @@
 # Práce s autonomními agenty
 
-**Stav k:** 4. 11. 2026 · **Pro:** vedoucího projektu, Claude v Projektu (dispečer) a agenty Claude Code na JupyterHubu
+**Stav k:** 5. 11. 2026 · **Pro:** vedoucího projektu, Claude v Projektu (dispečer) a agenty Claude Code na JupyterHubu
 
 Claude v Projektu píše zadání. Agent Claude Code na JupyterHubu ho sám provede od klonu repozitáře po pull request. GitHub každou změnu zkontroluje a vedoucí projektu ji sloučí.
 
@@ -43,8 +43,7 @@ Když zadání skladu neříká, jak se něco má chovat (otázky Q-xx), nic nev
 jasné, a nejasnost napiš do závěrečné zprávy.
 
 ## Repozitář
-- čtení: https://github.com/admplchmn/houfek_sklad.git (veřejný)
-- zápis: git@github.com:admplchmn/houfek_sklad.git
+- čtení i zápis: https://github.com/admplchmn/houfek_sklad.git (veřejný, zápis přes HTTPS a přihlášené `gh`)
 - větev: `ostrov/<složka>/<krátký-popis>`, založ ji od `origin/main`
 - nikdy `git push origin main`
 
@@ -69,19 +68,49 @@ jasné, a nejasnost napiš do závěrečné zprávy.
 
 ## Postup
 1. `git clone https://github.com/admplchmn/houfek_sklad.git && cd houfek_sklad`
-   (repozitář už máš: `git fetch origin`), pak `git remote set-url --push origin git@github.com:admplchmn/houfek_sklad.git`
+   (repozitář už máš: `git fetch origin`), pak `git remote set-url --push origin https://github.com/admplchmn/houfek_sklad.git`,
+   `~/.local/bin/gh auth status` (musí hlásit přihlášení – když ne, skonči a napiš to)
    a `git switch -c <větev> origin/main`
 2. `pip install -r requirements-vyvoj.txt`; práce, testy, `python -m nastroje.over_vse`
 3. `git push -u origin <větev>`
-4. Výsledek CI: `curl -s "https://api.github.com/repos/admplchmn/houfek_sklad/actions/runs?branch=<větev>&per_page=1"`.
-   Počkej, až je `status` = `completed`. Když `conclusion` není `success`, otevři joby
-   (`…/actions/runs/<id>/jobs`), oprav a pushni znovu. Nejvýš 3 kola, pak skonči a napiš proč.
-5. Pull request: `gh pr create --base main --head <větev> --fill`, když je `gh` přihlášené;
-   jinak do zprávy dej odkaz https://github.com/admplchmn/houfek_sklad/pull/new/<větev>
+4. Výsledek CI: `~/.local/bin/gh run list --branch <větev> -L 3`. Počkej, až je běh `completed`.
+   Když `conclusion` není `success`, prohlédni ho `~/.local/bin/gh run view <id> --log-failed`,
+   oprav příčinu a pushni znovu. Nejvýš 3 kola, pak skonči a napiš proč.
+5. Pull request: `~/.local/bin/gh pr create --base main --head <větev> --title "<krátký název>" --body-file /tmp/houfek-pr.md`
+   – popis PR je závěrečná zpráva v tom souboru. Agent PR neshlučuje.
+
+## Pracovní režim (platí do konce úkolu)
+
+Pracuj samostatně, dokud nesplníš všechny body „Hotovo, když“ a CI není zelené, nebo dokud nenarazíš
+na skutečnou překážku (chybí přístup, otevřená Q-xx blokuje další krok). Nezastavuj se kvůli
+průběžnému hlášení ani kvůli otázce, jestli máš pokračovat.
+
+1. Začni stavem: `git status`, `git log --oneline origin/main..HEAD` a
+   `pip install -q -r requirements-vyvoj.txt` (po restartu serveru balíčky chybí). Z bodů „Hotovo,
+   když“ udělej seznam úkolů a ke každému napiš, čím ho ověříš (test nebo příkaz).
+2. Než něco napíšeš, přečti kód, na kterém to stojí. Nic nehádej.
+3. Nejmenší změna, která úkol splní: žádné funkce, parametry ani vrstvy navíc. U nového pravidla
+   nejdřív test, pak kód. Po každém kroku pusť testy, kterých se změna týká.
+4. T-SQL lokálně neověříš, integrační testy se bez SQL Serveru přeskočí. Každý dotaz zkontroluj proti
+   schématu `sql/migrace/001–004` a pushni brzy, ať ho ověří CI.
+5. CI: `gh run list --branch <větev> -L 3`, výpis chyby `gh run view <id> --log-failed` (`gh` je
+   v `~/.local/bin/gh`). Oprav příčinu; testy neoslabuj, nepřeskakuj ani nemaž. Po dokončení práce
+   nejvýš 3 opravná kola, pak skonči a napiš proč.
+6. Před každým pushem projdi celý `git diff origin/main...HEAD`: každý řádek patří k zadání, styl jako
+   kód kolem. Pak `python -m nastroje.over_vse` („Všechny kontroly prošly.“) a
+   `python -m nastroje.hranice_ostrova <větev>`.
+7. Push odmítnutý jako non-fast-forward: `git pull --no-rebase origin <větev>`, znovu `over_vse`, push.
+   Nikdy `--force`.
+8. Nikdy: push do `main`, `gh pr merge`, nastavení repozitáře, změny mimo „Smíš měnit“, vymyšlené
+   chování u Q-xx, vypisování nebo ukládání tokenů.
+9. Závěrečná zpráva (do popisu PR i jako odpověď): co se změnilo, jedním odstavcem; tabulka „bod
+   Hotovo, když → důkaz (test nebo příkaz) → výsledek“; odkaz na zelený běh CI; otevřené body (Q-xx,
+   návrhy pro P1). Uveď jen to, co máš ověřené výstupem příkazu.
 
 ## Závěrečná zpráva (do popisu PR i jako odpověď)
 - co se změnilo, jedním odstavcem;
-- testy a výsledek CI (odkaz na běh);
+- tabulka „bod Hotovo, když → důkaz (test nebo příkaz) → výsledek“;
+- testy a výsledek CI (odkaz na zelený běh);
 - otevřené body: Q-xx, návrhy pro P1.
 ````
 
@@ -100,7 +129,12 @@ Pravidla:
 - najednou nejvýš jeden píšící agent na ostrov; ke každé sadě zadání napiš, která lze pustit souběžně;
 - sdílené části (app/platforma, sql, kontrakty, tests, .github, docs) jen jako úkol pro P1;
 - zadání musí být soběstačné, agent tento chat nevidí: cíl, soubory, akceptační kritéria, postup;
+- ke každému zadání přidej sekci „Pracovní režim“ ze šablony a řádek, kam agent zapíše závěrečnou
+  zprávu (soubor pro `gh pr create --body-file`);
 - akceptační kritéria ověřitelná testem; odkazuj na kapitolu zadání;
+- agent zapisuje přes HTTPS a přihlášené `gh`, CI sleduje `gh run list` a `gh run view <id> --log-failed`,
+  PR zakládá `gh pr create … --body-file`; PR neshlučuje a nemění nastavení repozitáře;
+- token do chatu agentu nepatří – nastaví se mimo chat přes `gh auth login`;
 - nelogický nebo nejasný scénář ze zadání (Q-xx) nevymýšlej, zeptej se vedoucího projektu;
 - simplicity first: nejmenší změna, která úkol splní.
 
@@ -114,12 +148,15 @@ Repozitář je veřejný, takže pravidla i GitHub Actions jsou zdarma.
 1. **Settings → Rules → Rulesets → New branch ruleset**, název „main“, cíl „Default branch“:
    - Restrict deletions;
    - Block force pushes;
-   - Require a pull request before merging;
+   - Require a pull request before merging, „Required approvals“ 0 – agent má počkat na zelené CI, ne na druhého člověka;
+   - Allowed merge methods: jen „Squash merge“;
    - Require status checks to pass: „Předběžné kontroly (bez DB)“ a „Integrační testy (SQL Server 2022)“, k tomu „Require branches to be up to date before merging“;
-   - Bypass list: Repository admin, tedy jen vy.
+   - Bypass list: prázdný – výjimku nedostane nikdo, ani admin; sloučí se pull request.
 2. **Settings → General → Pull Requests:**
    - jen „Allow squash merging“;
    - zapnout „Automatically delete head branches“.
 3. **Agenti a přístup:**
-   - každý agent na JupyterHubu má SSH klíč s právem zápisu, nebo token omezený na tento repozitář s dobou platnosti;
+   - `gh` stáhne agent z hotového souboru na GitHub Releases (conda ho nemá) do `~/.local/bin`, protože `~/.local/bin` není ve výchozím `PATH`, příkazy se píšou `~/.local/bin/gh …`;
+   - `gh auth login` s fine-grained tokenem, který míří jen na tento repozitář a má právo Contents: Write; token se zadává mimo chat agenta a nikdy se do něj neopisuje;
+   - když `gh auth status` hlásí nepřihlášeného agenta, agent push ani PR neřeší – skončí a napíše to;
    - hesla k databázím a přístupy k PowerKey na JupyterHub nepatří.
