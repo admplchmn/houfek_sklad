@@ -15,7 +15,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 
 from app.platforma.chyby import chyba_vstupu
-from app.platforma.db import Spojeni
+from app.platforma.db import Spojeni, po_davkach
 from app.platforma.sql_chyby import nativni_kody
 
 FK_CIZI_OBJEKT = 547     # porušení cizího klíče (např. neexistující pracoviště)
@@ -107,6 +107,20 @@ def opravneni_role(spoj: Spojeni, role_id: int) -> list[str]:
 
 def uzivatel_podle_id(spoj: Spojeni, uzivatel_id: int) -> dict | None:
     return spoj.jeden(_UZIVATEL + " WHERE u.UzivatelID = ?", uzivatel_id)
+
+
+def uzivatele_podle_id(spoj: Spojeni, uzivatel_ids: list[int]) -> list[dict]:
+    """Uživatelé podle seznamu ID pro rozhraní (i neaktivní); neexistující ID ve výsledku chybí.
+
+    Bez `PinHash` a `KodKarty` – ty ostrov nikam ven neposílá. Dávky kvůli limitu parametrů `IN (…)`.
+    """
+    radky: list[dict] = []
+    for davka in po_davkach(uzivatel_ids):
+        znacky = ", ".join("?" for _ in davka)
+        radky += spoj.dotaz("SELECT u.UzivatelID, u.OsobniCislo, u.Jmeno, u.Prijmeni, r.KodRole, u.Aktivni"
+                            " FROM dbo.Uzivatel AS u JOIN dbo.Role AS r ON r.RoleID = u.RoleID"
+                            f" WHERE u.UzivatelID IN ({znacky})", *davka)
+    return radky
 
 
 def seznam_uzivatelu(spoj: Spojeni, *, hledat: str | None, role_id: int | None, aktivni: bool | None,

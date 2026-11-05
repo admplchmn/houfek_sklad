@@ -16,7 +16,7 @@ import itertools
 import uuid
 
 from app.ostrovy import OSTROVY
-from app.ostrovy.identita import domena, sluzby
+from app.ostrovy.identita import domena, rozhrani, sluzby
 from app.ostrovy.identita.kontrakty import (
     NovyTerminalVstup,
     NovyUzivatelVstup,
@@ -458,3 +458,21 @@ class TestPlatnostPrihlaseni(ZakladIdentit):
                          vstup=ZmenaRoleVstup(opravneni=["DIL_CIST"], duvod="hotovo"))
         self.chybnou(self.klient.get("/api/identita/uzivatele"), 403, "NO_PERMISSION")
         self.assertEqual(self.ok(self.klient.get("/api/identita/ja"))["opravneni"], ["DIL_CIST"])
+
+
+class TestRozhrani(ZakladIdentit):
+    """`nacti_uzivatele` – jediné, co z identity čtou ostatní ostrovy (historie, audit)."""
+
+    def test_nacti_uzivatele_vraci_i_neaktivni(self):
+        aktivni = self.zaloz(jmeno="Petr", prijmeni="Adams", role="SKL")
+        neaktivni = self.zaloz(jmeno="Eva", prijmeni="Kralova", role="OPER")
+        sluzby.deaktivuj_uzivatele.__wrapped__(self.spoj, uzivatel_id=neaktivni.uzivatel_id,
+                                               vstup=DuvodVstup(duvod="odchod z firmy"), kdo=self.kdo)
+
+        nacti = rozhrani.nacti_uzivatele(self.spoj, [aktivni.uzivatel_id, neaktivni.uzivatel_id, 999_999])
+
+        self.assertEqual(sorted(nacti), sorted([aktivni.uzivatel_id, neaktivni.uzivatel_id]))
+        self.assertEqual(nacti[aktivni.uzivatel_id],
+                         rozhrani.UzivatelInfo(aktivni.uzivatel_id, aktivni.osobni_cislo, "Petr Adams", "SKL", True))
+        self.assertEqual(nacti[neaktivni.uzivatel_id], rozhrani.UzivatelInfo(
+            neaktivni.uzivatel_id, neaktivni.osobni_cislo, "Eva Kralova", "OPER", False))

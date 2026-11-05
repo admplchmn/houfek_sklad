@@ -9,6 +9,8 @@ from dataclasses import dataclass
 
 from app.platforma.db import Spojeni
 
+from . import repozitar
+
 
 @dataclass(frozen=True)
 class UzivatelInfo:
@@ -21,6 +23,13 @@ class UzivatelInfo:
 
 def nacti_uzivatele(spoj: Spojeni, uzivatel_ids: list[int]) -> dict[int, UzivatelInfo]:
     """Uživatelé podle ID (i neaktivní); neexistující ve výsledku chybí. PIN se nikdy nevrací."""
+    if spoj is not None and spoj.dialekt == "mssql":
+        # ostatní ostrovy čtou skutečná data; bez SQL Serveru (testy kostry volají s `spoj=None`) dál platí
+        # vzorová data, aby testy spotřebitelů běžely nad stabilními vzorky
+        return {radek["UzivatelID"]: UzivatelInfo(radek["UzivatelID"], radek["OsobniCislo"],
+                                                  f"{radek['Jmeno']} {radek['Prijmeni']}", radek["KodRole"],
+                                                  radek["Aktivni"])
+                for radek in repozitar.uzivatele_podle_id(spoj, uzivatel_ids)}
     from . import ukazky  # KOSTRA (fáze 0)
 
     return {i: UzivatelInfo(u.uzivatel_id, u.osobni_cislo, u.cele_jmeno, u.kod_role, u.aktivni)
