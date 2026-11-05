@@ -33,7 +33,7 @@ copy .env.priklad .env          # vyplnit HOUFEK_DB_UZIVATEL / HOUFEK_DB_HESLO; 
 python -m nastroje.over_vse     # musí skončit „Všechny kontroly prošly.“
 ```
 
-Testy proběhnou i bez databáze. **Bez databáze běží i aplikace:** s `HOUFEK_VYVOJ=1` a bez `HOUFEK_DB_SERVER` naběhne nad dočasnou sqlite (jen tabulky Platformy). Kostra ostrovů vrací vzorová data a skladové příkazy mají funkční `requestId`. Nic se ale neukládá.
+Testy proběhnou i bez databáze. **Bez databáze běží i aplikace:** s `HOUFEK_VYVOJ=1` a bez `HOUFEK_DB_SERVER` naběhne nad dočasnou sqlite (jen tabulky Platformy). Kostra ostrovů vrací vzorová data a skladové příkazy mají funkční `requestId`. Nic se ale neukládá. **Endpointy ostrova, který má hotovou fázi 1, ale SQL Server potřebují** (sekce 1.1): jejich služby čtou vlastní tabulky `dbo.…`, které v sqlite kostry nejsou. Bez databáze proto ověřte jen Platformu a šablonu ostrova `app/ostrovy/_sablona`.
 
 ```powershell
 $env:HOUFEK_VYVOJ = "1"; flask --app app run --debug    # Swagger: http://localhost:5000/api/docs
