@@ -65,6 +65,16 @@ class TestKody(unittest.TestCase):
             domena.dalsi_cislo_boxu([999])
         self.assertEqual(zachyceno.exception.kod, "BOX_SERIES_FULL")
 
+    def test_over_kod_boxu(self):
+        """Kód ze štítku musí patřit do řady typu a pracoviště – jinak je to neplatný kód, ne kolize."""
+        self.assertEqual(domena.over_kod_boxu("DYN", "PLE", " bple 037 "), "BPLE037")
+        self.assertEqual(domena.over_kod_boxu("STAT", "PLE", "bstat001"), "BSTAT001")
+        for typ, pracoviste, kod in [("DYN", "PLE", "BSTAT037"), ("DYN", "1SV", "BPLE037"),     # cizí řada
+                                     ("DYN", "PLE", "BPLE37"), ("DYN", "PLE", "BPLE1000"),      # špatný počet číslic
+                                     ("STAT", "PLE", "BPLE037"), ("DYN", "PLE", "BPLE03A")]:
+            self.assertEqual(chybna_pole(domena.over_kod_boxu, typ, pracoviste, kod), {"kodBoxu"}, kod)
+        self.assertEqual(chybna_pole(domena.over_kod_boxu, "DYN", "PLE", "BPLE000"), {"cisloBoxu"})
+
 
 class TestPoradi(unittest.TestCase):
     def test_vlozeni(self):
