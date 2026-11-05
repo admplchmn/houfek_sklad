@@ -1,8 +1,7 @@
 """Integrační testy repozitáře ostrova C proti SQL Serveru (docs/adr/0009, vrstva 3).
 
-Zakládání se testuje přes `rozhrani.py` – to je to, co volají ostatní ostrovy. Čtecí funkce se
-testují přímo na `repozitar.py`, protože funkce rozhraní vracejí po celou fázi 1 vzorová data
-(docs/vyvoj.md 3.4) a přes rozhraní by nad databází nic neověříme.
+Zakládání i čtení se testuje přes `rozhrani.py` – to je to, co volají ostatní ostrovy. Nad
+SQL Serverem rozhraní přepíná na `repozitar.py`, takže jeden test ověří zapojení i samotné dotazy.
 
 Data si test zakládá vlastní a s unikátními kódy: v testovací databázi zůstávají potvrzená data
 z předchozích běhů i data ostatních ostrovů (tests/integrace/zaklad.py), proto nic netvrdíme
@@ -14,7 +13,7 @@ import unittest
 import uuid
 from decimal import Decimal
 
-from app.ostrovy.struktura import domena, repozitar, ukazky
+from app.ostrovy.struktura import domena, ukazky
 from app.ostrovy.struktura import rozhrani as struktura
 from app.platforma.chyby import AppError
 from app.platforma.typy import Kontext
@@ -244,7 +243,7 @@ class TestZalozeniStruktury(ZakladStruktury):
 
 
 class TestCteni(ZakladStruktury):
-    """Čtecí funkce se testují na repozitáři – rozhraní ještě po celou fázi 1 vrací vzorová data."""
+    """Čtecí funkce se testují přes rozhraní – nad SQL Serverem veškerou práci udělá repozitář."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -256,22 +255,22 @@ class TestCteni(ZakladStruktury):
 
     def test_najdi_objekt(self):
         barcode = f"HOUFEK-{self.kod}-R01"
-        regal = repozitar.najdi_objekt(self.spoj, barcode)
+        regal = struktura.najdi_objekt(self.spoj, barcode)
         self.assertEqual((regal.typ, regal.kod, regal.adresa, regal.regal_id, regal.box_id),
                          ("REGAL", barcode, barcode, self.regal_id, None))
-        box = repozitar.najdi_objekt(self.spoj, f" {self.kod_boxu.lower()} ")
+        box = struktura.najdi_objekt(self.spoj, f" {self.kod_boxu.lower()} ")
         self.assertEqual((box.typ, box.kod, box.adresa, box.regal_id, box.uroven_id, box.vnitrni_pozice_id),
                          ("BOX", self.kod_boxu, self.adresa, self.regal_id, self.uroven_id, None))
-        misto = repozitar.najdi_objekt(self.spoj, f"{self.kod_boxu}-CH")
+        misto = struktura.najdi_objekt(self.spoj, f"{self.kod_boxu}-CH")
         self.assertEqual((misto.typ, misto.kod, misto.adresa, misto.uroven_id, misto.box_id),
                          ("POZICE", f"{self.kod_boxu}-CH", f"{self.adresa}-CH", self.uroven_id, self.box))
         self.assertEqual(misto.vnitrni_pozice_id, self.ids_boxu(self.box)[2])
         druhy_regal = struktura.zaloz_regal(self.spoj, self.kdo, self.pracoviste_id, "R02", None)
         struktura.zaloz_uroven(self.spoj, self.kdo, druhy_regal, "U05", 5, 1800, 600)
-        self.assertEqual(repozitar.najdi_objekt(self.spoj, f" houfek-{self.kod}-R02 ").regal_id, druhy_regal)
+        self.assertEqual(struktura.najdi_objekt(self.spoj, f" houfek-{self.kod}-R02 ").regal_id, druhy_regal)
 
     def test_najdi_vnitrni_pozici(self):
-        misto = repozitar.najdi_vnitrni_pozici(self.spoj, f" {self.kod_boxu.lower()}-ch ")
+        misto = struktura.najdi_vnitrni_pozici(self.spoj, f" {self.kod_boxu.lower()}-ch ")
         self.assertEqual((misto.vnitrni_pozice_id, misto.box_id, misto.kod, misto.kod_boxu, misto.kod_pozice),
                          (self.ids_boxu(self.box)[2], self.box, f"{self.kod_boxu}-CH", self.kod_boxu, "CH"))
         self.assertEqual((misto.typ_boxu, misto.velikost, misto.pracoviste, misto.regal_id, misto.uroven_id),
@@ -279,10 +278,10 @@ class TestCteni(ZakladStruktury):
         self.assertEqual((misto.rozmer_c7, misto.blokovano, misto.box_blokovany, misto.poradi_v_boxu),
                          (None, False, False, 3))
         self.assertEqual(misto.adresa, f"{self.adresa}-CH")
-        self.assertEqual(repozitar.najdi_vnitrni_pozici(self.spoj, f"{self.adresa}-CH").vnitrni_pozice_id,
+        self.assertEqual(struktura.najdi_vnitrni_pozici(self.spoj, f"{self.adresa}-CH").vnitrni_pozice_id,
                          misto.vnitrni_pozice_id)                                 # dlouhý kód (Q-02)
         self.spoj.proved("UPDATE dbo.Box SET Blokovany = 1 WHERE BoxID = ?", self.box)
-        blok = repozitar.najdi_vnitrni_pozici(self.spoj, f"{self.kod_boxu}-CH")
+        blok = struktura.najdi_vnitrni_pozici(self.spoj, f"{self.kod_boxu}-CH")
         self.assertEqual((blok.blokovano, blok.box_blokovany), (True, True))       # blokace boxu platí pro všechy
 
     def test_chyby_skeneru(self):
@@ -291,34 +290,34 @@ class TestCteni(ZakladStruktury):
                            (stary_stitek, "INVALID_BARCODE"),
                            (f"B{self.kod}999-CH", "NOT_FOUND"),                     # box neexistuje
                            (f"{self.kod_boxu}-K", "NOT_FOUND")]:                    # T13: K v členění C4 není
-            self.assertEqual(self.kod_chyby(repozitar.najdi_objekt, self.spoj, kod), chyba, kod)
-            self.assertEqual(self.kod_chyby(repozitar.najdi_vnitrni_pozici, self.spoj, kod), chyba, kod)
-        self.assertEqual(self.kod_chyby(repozitar.najdi_objekt, self.spoj, f"HOUFEK-{self.kod}-R99"), "NOT_FOUND")
+            self.assertEqual(self.kod_chyby(struktura.najdi_objekt, self.spoj, kod), chyba, kod)
+            self.assertEqual(self.kod_chyby(struktura.najdi_vnitrni_pozici, self.spoj, kod), chyba, kod)
+        self.assertEqual(self.kod_chyby(struktura.najdi_objekt, self.spoj, f"HOUFEK-{self.kod}-R99"), "NOT_FOUND")
         for kod in (self.kod_boxu, f"HOUFEK-{self.kod}-R01"):                       # box a regál nejsou pozice
-            self.assertEqual(self.kod_chyby(repozitar.najdi_vnitrni_pozici, self.spoj, kod),
+            self.assertEqual(self.kod_chyby(struktura.najdi_vnitrni_pozici, self.spoj, kod),
                              "WRONG_SCAN_LEVEL", kod)
 
     def test_nacti_mista(self):
         ids = self.ids_boxu(self.box)
         druhe_ids = self.ids_boxu(self.druhy_box)
-        mista = repozitar.nacti_mista(self.spoj, ids + [ids[0], NEEXISTUJE])
+        mista = struktura.nacti_mista(self.spoj, ids + [ids[0], NEEXISTUJE])
         self.assertEqual(sorted(mista), sorted(ids))                # duplicita se sloučí, neexistující chybí
         misto = mista[ids[0]]
         self.assertEqual((misto.kod, misto.kod_boxu, misto.typ_boxu, misto.velikost, misto.adresa),
                          (f"{self.kod_boxu}-G", self.kod_boxu, "DYN", "V3", f"{self.adresa}-G"))
-        self.assertEqual(repozitar.nacti_mista(self.spoj, []), {})
+        self.assertEqual(struktura.nacti_mista(self.spoj, []), {})
         self.vyraz(self.druhy_box)
-        self.assertEqual(sorted(repozitar.nacti_mista(self.spoj, ids + druhe_ids)), sorted(ids))
+        self.assertEqual(sorted(struktura.nacti_mista(self.spoj, ids + druhe_ids)), sorted(ids))
 
     def test_kandidatni_mista_dyn(self):
         def kandidati(velikost: str = "V3", **prava) -> list[str]:
-            return [m.kod for m in repozitar.kandidatni_mista_dyn(self.spoj, self.regal_id, velikost, **prava)]
+            return [m.kod for m in struktura.kandidatni_mista_dyn(self.spoj, self.regal_id, velikost, **prava)]
 
         prihradky = ("G", "H", "CH", "I")
         vsechny = [f"{self.kod_boxu}-{p}" for p in prihradky] + [f"B{self.kod}002-{p}" for p in prihradky]
         self.assertEqual(kandidati(), vsechny)                      # číslo boxu, pak pořadí v boxu (21.1.3)
         self.assertEqual(kandidati("V6"), [])                       # jiná velikost se neuchází
-        self.assertEqual(self.kod_chyby(repozitar.kandidatni_mista_dyn, self.spoj, NEEXISTUJE, "V3"), "NOT_FOUND")
+        self.assertEqual(self.kod_chyby(struktura.kandidatni_mista_dyn, self.spoj, NEEXISTUJE, "V3"), "NOT_FOUND")
         self.spoj.proved("UPDATE dbo.Box SET Blokovany = 1 WHERE BoxID = ?", self.druhy_box)
         self.assertEqual(kandidati(), vsechny[:4])                  # blokovaný box se neuchází
         self.spoj.proved("UPDATE dbo.Box SET Blokovany = 0 WHERE BoxID = ?", self.druhy_box)
@@ -332,37 +331,37 @@ class TestCteni(ZakladStruktury):
         druhy_regal = struktura.zaloz_regal(self.spoj, self.kdo, self.pracoviste_id, "R02", None)
         druha_uroven = struktura.zaloz_uroven(self.spoj, self.kdo, druhy_regal, "U01", 1, 1800, 600)
         c7 = self.zaloz(druha_uroven, cleneni="C7", rozmer=(1000, 500))
-        self.assertEqual([m.kod for m in repozitar.kandidatni_mista_dyn(self.spoj, self.regal_id, "V3")],
+        self.assertEqual([m.kod for m in struktura.kandidatni_mista_dyn(self.spoj, self.regal_id, "V3")],
                          [f"{self.kod_boxu}-{p}" for p in ("G", "H", "CH", "I")]
                          + [f"B{self.kod}002-{p}" for p in ("G", "H", "CH", "I")])
-        self.assertEqual([m.kod for m in repozitar.kandidatni_mista_dyn(self.spoj, self.regal_id, "V6")], [])
-        self.assertEqual([m.kod for m in repozitar.kandidatni_mista_dyn(self.spoj, self.regal_id, "V6",
+        self.assertEqual([m.kod for m in struktura.kandidatni_mista_dyn(self.spoj, self.regal_id, "V6")], [])
+        self.assertEqual([m.kod for m in struktura.kandidatni_mista_dyn(self.spoj, self.regal_id, "V6",
                                                                        cele_pracoviste=True)],
                          [f"B{self.kod}003-R"])
-        misto = repozitar.kandidatni_mista_dyn(self.spoj, druhy_regal, "V6")[0]
+        misto = struktura.kandidatni_mista_dyn(self.spoj, druhy_regal, "V6")[0]
         self.assertEqual((misto.kod, misto.regal_id, misto.rozmer_c7.delka_mm, misto.rozmer_c7.hloubka_mm),
                          (f"B{self.kod}003-R", druhy_regal, Decimal(1000), Decimal(500)))
         self.assertEqual(c7, misto.box_id)
 
     def test_pozice_v_rozsahu(self):
         vsechny = self.ids_boxu(self.box) + self.ids_boxu(self.druhy_box)
-        self.assertEqual(repozitar.pozice_v_rozsahu(self.spoj, "BOX", self.box), self.ids_boxu(self.box))
-        self.assertEqual(repozitar.pozice_v_rozsahu(self.spoj, "POZICE", vsechny[0]), [vsechny[0]])
+        self.assertEqual(struktura.pozice_v_rozsahu(self.spoj, "BOX", self.box), self.ids_boxu(self.box))
+        self.assertEqual(struktura.pozice_v_rozsahu(self.spoj, "POZICE", vsechny[0]), [vsechny[0]])
         for typ, cil in [("UROVEN", self.uroven_id), ("REGAL", self.regal_id), ("PRAC", self.pracoviste_id)]:
-            self.assertEqual(repozitar.pozice_v_rozsahu(self.spoj, typ, cil), sorted(vsechny), typ)
-        full = repozitar.pozice_v_rozsahu(self.spoj, "FULL", None)
+            self.assertEqual(struktura.pozice_v_rozsahu(self.spoj, typ, cil), sorted(vsechny), typ)
+        full = struktura.pozice_v_rozsahu(self.spoj, "FULL", None)
         self.assertEqual(full, sorted(full))
         self.assertTrue(set(vsechny) <= set(full))                  # FULL je celá databáze, jen podmnožina
         for typ, cil in [("BOX", NEEXISTUJE), ("UROVEN", NEEXISTUJE), ("PRAC", NEEXISTUJE)]:
-            self.assertEqual(self.kod_chyby(repozitar.pozice_v_rozsahu, self.spoj, typ, cil), "NOT_FOUND", typ)
+            self.assertEqual(self.kod_chyby(struktura.pozice_v_rozsahu, self.spoj, typ, cil), "NOT_FOUND", typ)
         for typ, cil in [("SVET", None), ("FULL", self.uroven_id), ("BOX", None)]:
-            self.assertEqual(self.kod_chyby(repozitar.pozice_v_rozsahu, self.spoj, typ, cil),
+            self.assertEqual(self.kod_chyby(struktura.pozice_v_rozsahu, self.spoj, typ, cil),
                              "VALIDATION_ERROR", (typ, cil))
 
     def test_rozlozeni_urovne(self):
         """Boxy se řadí podle Pozice.Poradi, poloha přihrádek pochází ze šablony, souřadnice boxů z 17.1."""
         treti = self.zaloz(self.uroven_id, cleneni="C1", rozmer=(400, 360))
-        rozlozeni = repozitar.rozlozeni_urovne(self.spoj, self.uroven_id)
+        rozlozeni = struktura.rozlozeni_urovne(self.spoj, self.uroven_id)
         self.assertEqual((rozlozeni.uroven_id, rozlozeni.kod_urovne, rozlozeni.regal_id, rozlozeni.kod_regalu,
                           rozlozeni.pracoviste, rozlozeni.delka_plochy_mm, rozlozeni.hloubka_plochy_mm),
                          (self.uroven_id, "U01", self.regal_id, "R01", self.kod, 2400.0, 800.0))
@@ -379,10 +378,10 @@ class TestCteni(ZakladStruktury):
                          [("G", "V3", 0.5, 0.5), ("H", "V3", 0.0, 0.5), ("CH", "V3", 0.0, 0.5),
                           ("I", "V3", 0.5, 0.5)])
         self.assertEqual([p.kod_pozice for p in rozlozeni.boxy[2].pozice], ["A"])
-        self.assertEqual(self.kod_chyby(repozitar.rozlozeni_urovne, self.spoj, NEEXISTUJE), "NOT_FOUND")
+        self.assertEqual(self.kod_chyby(struktura.rozlozeni_urovne, self.spoj, NEEXISTUJE), "NOT_FOUND")
 
     def test_ciselniky(self):
-        ciselniky = repozitar.nacti_ciselniky(self.spoj)
+        ciselniky = struktura.nacti_ciselniky(self.spoj)
         pracoviste = {p.kod: p for p in ciselniky["pracoviste"]}[self.kod]
         self.assertEqual((pracoviste.id, pracoviste.aktivni), (self.pracoviste_id, True))
         self.assertEqual([p.kod for p in ciselniky["velikosti"]], ["V1", "V2", "V3", "V4", "V5", "V6"])
