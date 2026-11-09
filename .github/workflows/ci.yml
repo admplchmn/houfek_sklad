@@ -3,7 +3,7 @@
 #
 #   predesile      – totéž co `python -m nastroje.over_vse` bez databáze: testy, pravidla
 #                    ostrovů P1–P6, kontrakty P10, api.js, ruff. Integrační testy se přeskočí.
-#   integrace-tsql – SQL Server 2022 v kontejneru: migrate 001–004 a integrační testy, které
+#   integrace-tsql – SQL Server 2022 v kontejneru: migrate a integrační testy, které
 #                    už v repozitáři jsou (schéma, pohledy, zámky 1222, requestId – TD-01).
 #                    Testy repozitářů ostrovů přibydou s jejich fází 1; zatím tu není co testovat,
 #                    protože repozitáře jsou prázdné a vzorový svět v DB ještě nevzniká (Krok 0, P1).

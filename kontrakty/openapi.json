@@ -2774,7 +2774,7 @@
             "in": "query",
             "required": false,
             "schema": {
-              "default": false,
+              "default": true,
               "type": "boolean"
             }
           }
