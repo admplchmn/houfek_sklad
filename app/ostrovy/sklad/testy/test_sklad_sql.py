@@ -453,9 +453,11 @@ class TestCteniRozhrani(ZakladSkladu):
 class TestKandidati(ZakladSkladu):
     """21.1.3: volné DYN pozice pro díl nad SQL Serverem, včetně ostatních regálů pracoviště (Q-10)."""
 
-    def kandidati(self, dil_id: int, **filtr):
+    def kandidati(self, dil_id: int, **filtr) -> list:
+        """Položky odpovědi – `Seznam` sám o sobě položky neprochází (iteruje pole modelu)."""
         return sluzby.kandidati_dyn.__wrapped__(self.spoj, KandidatiFiltr(dil_id=dil_id,
-                                                                         regal_id=self.svet["regal"], **filtr))
+                                                                         regal_id=self.svet["regal"],
+                                                                         **filtr)).polozky
 
     def test_volne_pozice_podle_velikosti(self):
         dil_id, _ = self.dil()
@@ -480,7 +482,8 @@ class TestKandidati(ZakladSkladu):
             "SELECT CONCAT(f.KodFirmy, '-', p.KodPracoviste, '-', r.KodRegalu) FROM dbo.Regal AS r"
             " JOIN dbo.Pracoviste AS p ON p.PracovisteID = r.PracovisteID"
             " JOIN dbo.Firma AS f ON f.FirmaID = p.FirmaID WHERE r.RegalID = ?", self.svet["regal"])
-        kandidati = sluzby.kandidati_dyn.__wrapped__(self.spoj, KandidatiFiltr(dil_id=dil_id, kod_regalu=kod_regalu))
+        kandidati = sluzby.kandidati_dyn.__wrapped__(self.spoj,
+                                                    KandidatiFiltr(dil_id=dil_id, kod_regalu=kod_regalu)).polozky
         self.assertEqual([k.kod for k in kandidati], [m.kod for m in self.dyn])
         bez_velikosti, _ = self.dil(None)
         self.chyba(self.kandidati, bez_velikosti, kod="PART_HAS_NO_SIZE")
@@ -517,7 +520,8 @@ class TestSeznamUpozorneni(ZakladSkladu):
         otevrene = self.seznam(dil_id=dil_id).polozky                       # výchozí filtr = jen otevřená
         self.assertEqual([r.stav_upozorneni for r in otevrene], ["OTEVRENE"])
         self.assertEqual(self.seznam(dil_id=dil_id, stav="UZAVRENE").polozky, [])
-        self.assertEqual([r.typ_stavu for r in self.seznam(dil_id=dil_id, typ_stavu="POD_MINIMEM")], ["POD_MINIMEM"])
+        self.assertEqual([r.typ_stavu for r in self.seznam(dil_id=dil_id, typ_stavu="POD_MINIMEM").polozky],
+                         ["POD_MINIMEM"])
         self.assertEqual(self.seznam(dil_id=dil_id, typ_stavu="VYCERPANO").polozky, [])
         self.uskladni(self.stat[0], dil_id, 10)                             # doplnění nad minimum → uzavřené
         uzavrene = self.seznam(dil_id=dil_id, stav="UZAVRENE").polozky
