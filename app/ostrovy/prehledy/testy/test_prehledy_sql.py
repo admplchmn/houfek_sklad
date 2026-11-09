@@ -2,9 +2,10 @@
 
 Služby se volí `__wrapped__`, tedy bez dekorátoru @cteni – tělo běží ve spojení a transakci testu,
 proto se na konci vše vrátí zpět. Strukturu zakládáme rozhraním ostrova C (`zaloz_*`), díly rozhraním
-ostrova D (`zaloz_dil`); obsah, STAT přiřazení, pohyby a hlavičku transakce vkládáme přímo do tabulek
-ostrova E a Platformy, protože jejich rozhraní na to zatím funkci nemá (`prirad_stat_misto` i
-`zauctuj_korekci` jsou `NotImplementedError`).
+ostrova D (`zaloz_dil`); zbytek fixtury stavíme přímým zápisem do tabulek, protože rozhraní ho
+nenabízí: obsah, STAT přiřazení a pohyby (E – `prirad_stat_misto` i `zauctuj_korekci` jsou
+`NotImplementedError`), hlavičku transakce (Platforma), vyřazení dílu (`dbo.Dil`) a blokaci boxu
+(`dbo.Box`).
 
 Testy tvrdí jen o datech, která samy založily: monitoring omezují na vlastní pracoviště a laser na
 tloušťku vlastní řady dílů (laser filtr pracoviště nemá), aby do výsledků nezasáhla potvrzená data
@@ -131,11 +132,10 @@ class ZakladPrehledu(ZakladIntegrace):
 
     # --- volání služeb a ověřování ----------------------------------------------------------------
 
-    def chyba(self, funkce, *args, kod_chyby: str, **pole) -> AppError:
+    def chyba(self, funkce, *args, kod_chyby: str, **pole) -> None:
         with self.assertRaises(AppError) as zachyceno:
             funkce(*args, **pole)
         self.assertEqual(zachyceno.exception.kod, kod_chyby, zachyceno.exception)
-        return zachyceno.exception
 
     def sken(self, kod: str):
         return sluzby.sken.__wrapped__(self.spoj, kod)
@@ -169,7 +169,7 @@ class TestSkenAHledani(ZakladPrehledu):
         self.stat = self.misto_s_obsahem(self.dil_lezici, uroven_id=self.uroven_id, typ_boxu="STAT", pocet_ks=8)
         self.dyn = self.misto_s_obsahem(self.dil_lezici, uroven_id=self.uroven_id, pocet_ks=4)
         self.dil_bez_ciselniku = self.dil("PREHLED 2", material=None, tloustka_mm=None, prvni_operace=None)
-        self.dyn_druheho = self.misto_s_obsahem(self.dil_bez_ciselniku, pocet_ks=2)
+        self.misto_s_obsahem(self.dil_bez_ciselniku, pocet_ks=2)
 
     def test_sken_kodu_mista_vidi_obsah_a_vysvetli_prazdnou_pozici(self):
         """Zadání 12.2: po skenu pozice obsluha vidí díl a stav; zvýrazní se celá cesta k pozici."""
@@ -291,7 +291,7 @@ class TestRozlozeniUrovne(ZakladPrehledu):
         self.assertLess(vystup.boxy[0].x_mm, vystup.boxy[2].x_mm)
 
     def test_blokovany_box_je_cerveny(self):
-        """Blokaci drží ostrov C; barvu z ní počítá `domena.barva_boxu` – červená je pro oba typy boxu."""
+        """Blokaci drží ostrov C (rozhraní ji nenabízí); červená vyhrává nad modrou obsazeného DYN boxu."""
         self.spoj.proved("UPDATE dbo.Box SET Blokovany = 1 WHERE BoxID = ?", self.box_dyn["BoxID"])
         vystup = sluzby.rozlozeni.__wrapped__(self.spoj, self.uroven_id)
         self.assertEqual(next(b.barva for b in vystup.boxy if b.kod_boxu == self.box_dyn["KodBoxu"]), "CERVENA")
@@ -567,11 +567,12 @@ class TestPohyby(ZakladPrehledu):
     def test_filtry_a_strankovani(self):
         self.assertEqual(self.pohyby().celkem, 6)
         self.assertEqual(self.pohyby(dil_id=2_000_000_000).polozky, [])
-        self.assertEqual([p.pohyb_id for p in self.pohyby(kod=self.misto["KodMista"]).polozky][0], self.noci_31)
-        self.assertEqual(self.pohyby(vnitrni_pozice_id=self.misto["VnitrniPoziceID"]).celkem, 6)
+        z_kodu = self.pohyby(kod=self.pozice["KodMista"])
+        self.assertEqual((z_kodu.celkem, z_kodu.polozky[0].pohyb_id), (6, self.noci_31))
+        self.assertEqual(self.pohyby(vnitrni_pozice_id=self.pozice["VnitrniPoziceID"]).celkem, 6)
         self.assertEqual([p.pohyb_id for p in self.pohyby(typ_pohybu="KOREKCE").polozky],
                          [self.po_prechodu, self.pred_prechodem])
-        self.assertEqual([p.pohyb_id for p in self.pohyby(uzivatel_id=self.uzivatel_id).polozky][0], self.noci_31)
+        self.assertEqual(self.pohyby(uzivatel_id=self.uzivatel_id).celkem, 6)
         self.assertEqual(self.pohyby(uzivatel_id=2_000_000_000).polozky, [])
         druha_strana = self.pohyby(velikost=2, strana=2)
         self.assertEqual(([p.pohyb_id for p in druha_strana.polozky], druha_strana.celkem, druha_strana.strana,
