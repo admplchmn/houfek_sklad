@@ -84,10 +84,11 @@ class ZakladSkladu(ZakladIntegrace):
 
     # --- data ---------------------------------------------------------------------------------
 
-    def dil(self, velikost: str | None = "V3") -> int:
+    def dil(self, velikost: str | None = "V3") -> tuple[int, str]:
+        """(dilId, číslo dílu) – číslo testy potřebují i tam, kde ověřují data přes cizí pohledy."""
         dil_id, cislo = novy_dil(self.spoj, self.kdo, velikost)
         self.cisla_dilu.append(cislo)
-        return dil_id
+        return dil_id, cislo
 
     def prirad_stat(self, dil_id: int, misto: struktura.MistoInfo, *, minimalni_ks: int = 0,
                     maximalni_ks: int | None = None) -> int:
@@ -128,6 +129,11 @@ class ZakladSkladu(ZakladIntegrace):
                                                       cil_kod=cil.kod, **pole))
 
     # --- zjištění stavu ------------------------------------------------------------------------
+
+    @staticmethod
+    def uid(hodnota) -> uuid.UUID:
+        """ODBC vrací UNIQUEIDENTIFIER jako text – stejnou úpravu dělá i platforma (transakce.py)."""
+        return uuid.UUID(str(hodnota))
 
     def obsah(self, misto: struktura.MistoInfo) -> tuple[int, int] | None:
         """(dilId, počet ks) čtené rozhraním ostrova E; prázdná pozice je None."""
@@ -193,7 +199,8 @@ class TestPrijemDyn(ZakladSkladu):
         self.assertEqual((radek["PohybID"], radek["KodPohybu"], radek["DilID"]),
                          (vysledek.pohyby[0].pohyb_id, "PRIJEM", dil_id))               # odpověď nese skutečné ID
         self.assertEqual((radek["StavPred"], radek["StavPo"], radek["Mnozstvi"]), (0, 20, 20))
-        self.assertEqual((radek["TransakceID"], radek["UzivatelID"]), (self.spoj.transakce_id, self.kdo.uzivatel_id))
+        self.assertEqual((self.uid(radek["TransakceID"]), radek["UzivatelID"]),
+                         (self.spoj.transakce_id, self.kdo.uzivatel_id))
         self.assertEqual(radek["Poznamka"], "dávka z laseru")   # způsob potvrzení se nikam neukládá (brána G2)
         self.assertEqual(self.obsah(self.dyn[0]), (dil_id, 20))
         self.assertEqual(sklad.posledni_pohyby(self.spoj, [self.dyn[0].vnitrni_pozice_id,
@@ -298,7 +305,8 @@ class TestPresun(ZakladSkladu):
         self.assertEqual((presunuty.zdroj.stav_ks, presunuty.cil.stav_ks), (0, 12))
         radky = self.pohyby(self.dyn[0], self.dyn[1])
         self.assertEqual([r["KodPohybu"] for r in radky], ["PRIJEM", "PRESUN-OUT", "PRESUN-IN"])
-        self.assertEqual([r["TransakceID"] for r in radky[-2:]], [self.spoj.transakce_id] * 2)   # T05
+        self.assertEqual([self.uid(r["TransakceID"]) for r in radky[-2:]],
+                         [self.spoj.transakce_id] * 2)                                       # T05
         self.assertEqual(self.obsah(self.dyn[0]), None)
         self.assertEqual(self.obsah(self.dyn[1]), (dil_id, 12))
         self.assertEqual([self.soucet_pohybu(m) for m in self.dyn[:2]], [0, 12])
@@ -324,17 +332,17 @@ class TestUskladneniStat(ZakladSkladu):
 
     def setUp(self) -> None:
         super().setUp()
-        self.dil_id = self.dil()
+        self.dil_id, _ = self.dil()
         self.stat_id = self.prirad_stat(self.dil_id, self.stat[0], minimalni_ks=10, maximalni_ks=40)
 
     def test_uskladneni_z_vyroby_se_pricte(self):
         """T06: uskladnění bez zdroje je PRIJEM a množství se přičte k tomu, co už na pozici je."""
-        prvni = self.uskladni(self.stat[0], self.dil_id, 10)
+        prvni = self.uskladni(self.stat[0], self.dil_id, 15)
         self.assertEqual([(p.typ_pohybu, p.mnozstvi, p.stav_pred_ks, p.stav_po_ks) for p in prvni.pohyby],
-                         [("PRIJEM", 10, 0, 10)])
+                         [("PRIJEM", 15, 0, 15)])
         druhy = self.uskladni(self.stat[0], self.dil_id, 5)
-        self.assertEqual([(p.typ_pohybu, p.stav_pred_ks, p.stav_po_ks) for p in druhy.pohyby], [("PRIJEM", 10, 15)])
-        self.assertEqual(self.obsah(self.stat[0]), (self.dil_id, 15))
+        self.assertEqual([(p.typ_pohybu, p.stav_pred_ks, p.stav_po_ks) for p in druhy.pohyby], [("PRIJEM", 15, 20)])
+        self.assertEqual(self.obsah(self.stat[0]), (self.dil_id, 20))
         self.assertEqual((druhy.stav_zasoby, druhy.upozorneni, druhy.varovani), ("OK", None, ()))
 
     def test_uskladneni_z_dyn_pozice(self):
@@ -344,14 +352,14 @@ class TestUskladneniStat(ZakladSkladu):
         self.assertEqual([(p.typ_pohybu, p.kod, p.mnozstvi) for p in vysledek.pohyby],
                          [("PRESUN-OUT", self.dyn[0].kod, -3), ("PRESUN-IN", self.stat[0].kod, 3)])
         radky = self.pohyby(self.dyn[0], self.stat[0])
-        self.assertEqual([r["TransakceID"] for r in radky[-2:]], [self.spoj.transakce_id] * 2)
+        self.assertEqual([self.uid(r["TransakceID"]) for r in radky[-2:]], [self.spoj.transakce_id] * 2)
         self.assertEqual((self.obsah(self.dyn[0]), self.obsah(self.stat[0])), ((self.dil_id, 5), (self.dil_id, 3)))
         cela = self.uskladni(self.stat[0], self.dil_id, 5, zdroj_kod=self.dyn[0].kod)
         self.assertEqual((cela.zdroj.stav_ks, cela.zdroj.stav_boxu, self.obsah(self.dyn[0])), (0, "VOLNY", None))
         self.assertEqual(self.obsah(self.stat[0]), (self.dil_id, 8))
 
     def test_uskladneni_patri_jen_svuj_dil(self):
-        jiny_dil = self.dil()
+        jiny_dil, _ = self.dil()
         self.chyba(self.uskladni, self.stat[0], jiny_dil, 5, kod="WRONG_PART")
         self.chyba(self.uskladni, self.stat[1], self.dil_id, 5, kod="WRONG_PART")   # pozice bez přiřazení
         self.prijem(self.dyn[0], jiny_dil, 5)
@@ -374,24 +382,25 @@ class TestUskladneniStat(ZakladSkladu):
         self.assertEqual((prvni.stav_zasoby, prvni.upozorneni), ("POD_MINIMEM", "ZALOZENO"))
         druhy = self.vydej(self.stat[0], 1)
         self.assertEqual((druhy.stav_zasoby, druhy.upozorneni), ("POD_MINIMEM", None))   # žádný spam (Q-13)
+        # snímek platí od okamžiku vzniku – výdej beze změny stavu upozornění nepřepisuje
         self.assertEqual([(r["TypStavu"], r["StavUpozorneni"], r["AktualniPocetKs"], r["MinimalniPocetKs"])
-                          for r in self.upozorneni(self.stat_id)], [("POD_MINIMEM", "OTEVRENE", 6, 10)])
+                          for r in self.upozorneni(self.stat_id)], [("POD_MINIMEM", "OTEVRENE", 7, 10)])
 
     def test_opakovane_vydeje_pod_minimem_a_doplneni(self):
         """T20: stále jedno otevřené upozornění, po doplnění nad minimum uzavřené; nový pokles = nové."""
         self.uskladni(self.stat[0], self.dil_id, 12)
-        for pocet in (2, 2):
-            self.vydej(self.stat[0], pocet)
+        for ocekavane, pocet in (("ZALOZENO", 2), ("AKTUALIZOVANO", 2)):   # 10 = NA_MINIMU, pak POD_MINIMEM
+            self.assertEqual(self.vydej(self.stat[0], pocet).upozorneni, ocekavane)
+        self.assertEqual(self.vydej(self.stat[0], 1).upozorneni, None)      # 7 ks, stav se nemění → žádný spam
         self.assertEqual(len(self.upozorneni(self.stat_id)), 1)
-        self.assertEqual(self.vydej(self.stat[0], 1).upozorneni, "ZALOZENO")            # 7 ks → POD_MINIMEM
         doplneni = self.uskladni(self.stat[0], self.dil_id, 10)
         self.assertEqual((doplneni.stav_zasoby, doplneni.upozorneni), ("OK", "UZAVRENO"))
         prvni, = self.upozorneni(self.stat_id)
         self.assertEqual((prvni["StavUpozorneni"], prvni["TypStavu"], prvni["AktualniPocetKs"]),
-                         ("UZAVRENE", "POD_MINIMEM", 6))
+                         ("UZAVRENE", "POD_MINIMEM", 8))                    # snímek naposledy změněného stavu
         self.assertIsNotNone(prvni["DatumUzavreni"])
         self.assertEqual(prvni["UzavrelUzivatelID"], self.kdo.uzivatel_id)
-        self.vydej(self.stat[0], 10)
+        self.assertEqual(self.vydej(self.stat[0], 10).upozorneni, "ZALOZENO")   # nový pokles = nové upozornění
         self.assertEqual([(r["StavUpozorneni"], r["TypStavu"]) for r in self.upozorneni(self.stat_id)],
                          [("UZAVRENE", "POD_MINIMEM"), ("OTEVRENE", "POD_MINIMEM")])
 
@@ -428,7 +437,7 @@ class TestCteniRozhrani(ZakladSkladu):
         ocekavane = [sklad.StatMistoInfo(stat_id, dil_id, misto.vnitrni_pozice_id, 5, None, 50)]
         self.assertEqual(sklad.stat_mista(self.spoj, vnitrni_pozice_ids=[misto.vnitrni_pozice_id]), ocekavane)
         self.assertEqual(sklad.stat_mista(self.spoj, dil_ids=[dil_id]), ocekavane)
-        self.assertEqual(sklad.stat_mista(self.spoj, dil_ids=[self.dil()]), [])
+        self.assertEqual(sklad.stat_mista(self.spoj, dil_ids=[self.dil()[0]]), [])
         self.assertIn(stat_id, [s.stat_umisteni_id for s in sklad.stat_mista(self.spoj)])
         self.spoj.proved("UPDATE dbo.StatickeUmisteniDilu SET Aktivni = 0 WHERE StatickeUmisteniID = ?", stat_id)
         self.assertEqual(sklad.stat_mista(self.spoj, vnitrni_pozice_ids=[misto.vnitrni_pozice_id]), [])
@@ -467,12 +476,13 @@ class TestKandidati(ZakladSkladu):
 
     def test_kandidati_podle_naskenovaneho_regalu_a_chyby(self):
         dil_id, _ = self.dil()
-        kod_regalu = self.spoj.hodnota("SELECT CONCAT('HOUFEK-', p.KodPracoviste, '-', r.KodRegalu)"
-                                       " FROM dbo.Regal AS r JOIN dbo.Pracoviste AS p"
-                                       " ON p.PracovisteID = r.PracovisteID WHERE r.RegalID = ?", self.svet["regal"])
+        kod_regalu = self.spoj.hodnota(
+            "SELECT CONCAT(f.KodFirmy, '-', p.KodPracoviste, '-', r.KodRegalu) FROM dbo.Regal AS r"
+            " JOIN dbo.Pracoviste AS p ON p.PracovisteID = r.PracovisteID"
+            " JOIN dbo.Firma AS f ON f.FirmaID = p.FirmaID WHERE r.RegalID = ?", self.svet["regal"])
         kandidati = sluzby.kandidati_dyn.__wrapped__(self.spoj, KandidatiFiltr(dil_id=dil_id, kod_regalu=kod_regalu))
         self.assertEqual([k.kod for k in kandidati], [m.kod for m in self.dyn])
-        bez_velikosti = self.dil(None)
+        bez_velikosti, _ = self.dil(None)
         self.chyba(self.kandidati, bez_velikosti, kod="PART_HAS_NO_SIZE")
         self.chyba(sluzby.kandidati_dyn.__wrapped__, self.spoj,
                    KandidatiFiltr(dil_id=dil_id, regal_id=2_000_000_000), kod="NOT_FOUND")
