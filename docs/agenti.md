@@ -156,7 +156,7 @@ Repozitář je veřejný, takže pravidla i GitHub Actions jsou zdarma.
    - jen „Allow squash merging“;
    - zapnout „Automatically delete head branches“.
 3. **Agenti a přístup:**
-   - `gh` stáhne agent z hotového souboru na GitHub Releases (conda ho nemá) do `~/.local/bin`, protože `~/.local/bin` není ve výchozím `PATH`, příkazy se píšou `~/.local/bin/gh …`;
-   - `gh auth login` s fine-grained tokenem, který míří jen na tento repozitář a má právo Contents: Write; token se zadává mimo chat agenta a nikdy se do něj neopisuje;
+   - `gh` stáhne a nainstaluje **vedoucí projektu**, ne agent (agent má jen používat `~/.local/bin/gh`), z hotového souboru na GitHub Releases (conda ho nemá) do `~/.local/bin`; protože `~/.local/bin` není ve výchozím `PATH`, příkazy se píšou `~/.local/bin/gh …`;
+   - `gh auth login` s fine-grained tokenem, který míří jen na tento repozitář a má práva **Contents: Read and write**, **Pull requests: Read and write** a **Actions: Read** (agent dělá push, otevírá pull request a čte běhy CI); token se zadává mimo chat agenta a nikdy se do něj neopisuje;
    - když `gh auth status` hlásí nepřihlášeného agenta, agent push ani PR neřeší – skončí a napíše to;
    - hesla k databázím a přístupy k PowerKey na JupyterHub nepatří.

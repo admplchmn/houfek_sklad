@@ -108,7 +108,7 @@ jobs:
           else:
               raise SystemExit("SQL Server není připravený do 120 s: %s" % posledni)
           PY
-      - name: Založit HoufekSklad_TEST a provést migrace 001–004
+      - name: Založit HoufekSklad_TEST a provést migrace
         run: python -m nastroje.testovaci_db
       - name: Všechny kontroly včetně T-SQL
         run: python -m nastroje.over_vse

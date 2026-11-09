@@ -1,15 +1,16 @@
 # Soulad se zadáním: kontrolní seznam
 
-**Stav k:** 3. 11. 2026 · **Pro:** vedoucího projektu a programátory všech ostrovů · **Zadání:** v1.40, obrázky ke kap. 5–21 · **Rozsah:** schéma (`sql/migrace`), kontrakty a pravidla ostrovů B–G, vzorek XLSM ([rozbor](migrace-xlsm.md))
+**Stav k:** 9. 11. 2026 · **Pro:** vedoucího projektu a programátory všech ostrovů · **Zadání:** v1.40, obrázky ke kap. 5–21 · **Rozsah:** schéma (`sql/migrace`), kontrakty a pravidla ostrovů B–G, vzorek XLSM ([rozbor](migrace-xlsm.md))
 
 Obrázky ze zadání se dodržují striktně. Kde si zadání protiřečí nebo dává nelogický scénář, rozhoduje vedoucí projektu. Rozhodnutí jsou v tabulce níže. Než ostrov změní chování popsané v zadání, zkontroluje tento seznam.
 
 Čísla R-xx (rozpory), A-xx (nejasnosti) a Q-xx (otázky) jsou ze sdíleného dokumentu „Analýza zadání a osnova aplikace“.
 
-**Výsledek k 3. 11.:**
+**Výsledek k 9. 11.:**
 - Schéma, kontrakty a pravidla odpovídají obrázkům kap. 5–21.
 - Kontrola našla 7 rozdílů (Z-01 až Z-07), všechny jsou opravené a mají test.
-- Vedoucí projektu rozhodl 10 sporných bodů (D-01 až D-10).
+- Vedoucí projektu rozhodl 34 sporných bodů (D-01 až D-34); 9. 11. jich přibylo 24 (D-11 až D-34), včetně výchozích oprávnění rolí (matice G4, D-23).
+- Tři rozhodnutí mají otevřený detail, ve kterém se pokračovat nedá: D-15 (kde se varování nad maximum ukáže), D-27 (zda cílem korekce smí být blokovaná pozice) a D-34 (limit nečinnosti na PC).
 - Dva body jsou náš výklad a dají se změnit (V-01, V-02).
 
 ## Opraveno
@@ -40,8 +41,49 @@ Všechna nová pole jsou přidaná, nic se nepřejmenovalo ani neubralo (P10).
 | D-08 | 3. 11. | kap. 21.1.1 jmenuje pole odpovědi TransakceID | API dál vrací `transakceId`, psané jako ostatní pole (`requestId`, `cilKod`); údaj je stejný | beze změny |
 | D-09 | 3. 11. | obrázek U03 dělí BPLE002 na „A \| B“, tabulka 7.1 takové členění nemá (R-12) | chyba obrázku, platí **tabulka 7.1** | beze změny |
 | D-10 | 3. 11. | kap. 20: správa firem v administraci | **zatím ne**, otevřené na později; jediná firma HOUFEK je v počátečních datech | žádný endpoint; tabulka `Firma` je připravená |
+| D-11 | 9. 11. | Q-07: přesun DYN → DYN | jen celá dávka v rámci pracoviště, atomicky PRESUN-OUT + PRESUN-IN se stejným TransakceID; část dávky nebo jiné pracoviště = výdej + příjem | E, odpovídá kroku 1 |
+| D-12 | 9. 11. | Q-08: uskladnění do STAT | zdroj volí obsluha: DYN pozice (celá dávka i část) nebo „z výroby“; poslední operaci obsluha výslovně potvrdí volbou operace, systém ji neodvozuje | E, odpovídá kroku 1 |
+| D-13 | 9. 11. | Q-09: co blokace blokuje | příjem, výdej i přesun na blokovaném zdroji i cíli; inventuru ani její korekce nezastaví; důvod, uživatel a čas v `AuditZmen`; blokují SKL, MISTR a ADMIN | C, E (korekce blokaci nekontroluje) |
+| D-14 | 9. 11. | Q-10: chybí volná pozice správné velikosti | nabídnou se označené ostatní regály pracoviště; varianta „větší pozice pro MISTRa“ se nedělá, DYN vyžaduje přesnou velikost | E, odpovídá kroku 1 |
+| D-15 | 9. 11. | Q-11: maximum STAT | měkké: příjem nad maximum dokončit jde, ale až po zobrazení varování. **Otevřené:** zda varování ukáže obrazovka před odesláním (API beze změny), nebo server napoprvé odmítne a čeká na potvrzení | E |
+| D-16 | 9. 11. | Q-13: upozornění zásoby | jedno otevřené na STAT místo; při zhoršení se aktualizuje; samo se uzavře až nad minimem; 0 ks = VYCERPANO i při minimu 0; ručně uzavírá MISTR nebo ADMIN, vždy s poznámkou; TECH jen čte | E, matice G4 |
+| D-17 | 9. 11. | Q-14: blokovaný STAT cíl | POSITION_BLOCKED, nic se nezmění, dávka zůstane v DYN; kontrola znovu uvnitř transakce | E, odpovídá kroku 1 |
+| D-18 | 9. 11. | Q-15: sken cíle | na terminálu (PDA) povinný sken; ruční potvrzení jen na PC s RUCNI_POTVRZENI, ověří server; u pohybu se uloží RUCNE, jinak SKEN | migrace 005, E |
+| D-19 | 9. 11. | Q-26: díl bez velikosti pozice | do DYN ne; do STAT jen přes aktivní přiřazení téhož dílu | E, odpovídá kroku 1 |
+| D-20 | 9. 11. | Q-27: rekonfigurace boxu | jen zcela prázdný box bez STAT přiřazení; staré pozice `Aktivni = 0` (nemažou se), nové ze šablony, záznam v `AuditZmen`, nové štítky | C, odpovídá kroku 2 |
+| D-21 | 9. 11. | Q-28: změna velikosti dílu s obsahem | zakázaná, dokud má díl obsah v DYN; jinak s auditem | D, hotovo |
+| D-22 | 9. 11. | TD-24: dvojklik na „Přidat box“ | odloženo do fáze obrazovek, ale povinné před pilotem: dvojklik nesmí založit dva boxy | C, před pilotem |
+| D-23 | 9. 11. | G4: výchozí oprávnění rolí | matice 9.9 analýzy bez TECH u UPOZORNENI_UZAVRIT (tabulka níže) | migrace 005 |
+| D-24 | 9. 11. | Q-32: víc rolí na uživatele | právě jedna role, žádná individuální oprávnění | B, odpovídá |
+| D-25 | 9. 11. | Q-24: oprávnění podle pracoviště | ve V1 ne; pracoviště terminálu jen předvyplní filtry | beze změny |
+| D-26 | 9. 11. | Q-16: inventura za provozu | bez celoskladového zámku; položka si při fyzické kontrole uloží poslední PohybID pozice; při dokončení se stav a pozdější pohyby ověří znovu v téže transakci; pozdější pohyb nepřepíše zjištěný díl ani počet; jednoznačné změny množství téhož dílu se dopočtou; změna dílu, uvolnění a nové obsazení pozice, rekonfigurace nebo jiná nejasná změna → položka znovu k fyzické kontrole; dočasná blokace boxu nebo pozice je volitelná | migrace 005, F |
+| D-27 | 9. 11. | Q-17, S-22: jiný díl na pozici | ve STAT i v DYN: očekávaný díl se odúčtuje, nalezený se zaúčtuje na zvolený cíl, při dokončení znovu ověřený (volná neblokovaná DYN pozice přesné velikosti, nebo STAT místo přiřazené nalezenému dílu); současná pozice jen tehdy, když pro nalezený díl po korekci platí; bez cíle nejde inventuru dokončit; všechny korekce pohyby v jedné transakci, přímý přepis `DilID` zakázaný. **Otevřené:** smí být cílem současná pozice, když je blokovaná (Q-09 × Q-17) | F |
+| D-28 | 9. 11. | Q-22: doporučení pro laser | základ = max(0, Maximum − STAT − DYN, je-li `odecitatDyn` zapnutý); doporučeno = 0 při nulovém základu, jinak základ zaokrouhlený nahoru na standardní dávku (smí přes maximum; díl bez standardní dávky se nezaokrouhluje); výchozí `odecitatDyn` = zapnuto | G |
+| D-29 | 9. 11. | Q-20: počáteční stavy | z fyzické inventury po regálech při spuštění, řízenými pohyby POCAT-STAV; XLSM jen pro struktury a kmenová data; reálný vzorek XLSM je povinný vstup pro H | H |
+| D-30 | 9. 11. | Q-18: terminál | prohlížeč na PDA, čtečka jako klávesnice, osobní číslo + PIN (jen hash); konkrétní Chainway ověřit před pilotem | B, před pilotem |
+| D-31 | 9. 11. | Q-19: štítky | backend generuje PDF s Code 128, ZPL až podle tiskárny; samostatné štítky boxu i vnitřní pozice, i u C1 a C7 | C, před pilotem |
+| D-32 | 9. 11. | Q-23: zmetky | ve V1 bez evidence; vrácené množství standardní operací, rozdíl do poznámky pohybu | beze změny |
+| D-33 | 9. 11. | TD-07 (Q-33): zámek PINu | 5 chybných PINů po sobě → zámek účtu na 15 min; úspěšné přihlášení vynuluje počítadlo; odemknout může ADMIN; pokusy se auditují bez PINu | B, migrace, před pilotem |
+| D-34 | 9. 11. | TD-06 (Q-34): nečinnost | PDA: odhlášení po 15 min nečinnosti, posuvné, platí na serveru. **Otevřené:** limit na PC (dnes 12 h) | B, platforma, před pilotem |
 
 Schéma 001 ještě nikde v provozu neběželo, proto `Dil.Poznamka` přibyl přímo do něj. Po prvním spuštění už jen novou migrací (ADR-0003).
+
+### Matice výchozích oprávnění rolí (G4, rozhodnutí D-23)
+
+Seed v migraci `005_rozhodnuti_9_11.sql` je přesně tato matice; test je `tests/integrace/test_migrace_005.py`. Ostrovy berou tuto matici jako hotový fakt a nic k ní nedomýšlejí. Databáze – sdílená testovací i provozní – ale může obsahovat i řádky, které v matici nejsou: testy ostrova B si `RoleOpravneni` svých rolí přepisují samy, a proto test výchozí stav matice nezjišťuje nad sdílenými daty po cizích testech, ale smaže je a znovu založí ve své transakci.
+
+| Oprávnění | OPER | SKL | MISTR | TECH | ADMIN |
+|---|---|---|---|---|---|
+| DIL_CIST | ✓ | ✓ | ✓ | ✓ | ✓ |
+| SKLAD_PRIJEM, SKLAD_VYDEJ | ✓ | ✓ | ✓ | – | ✓ |
+| SKLAD_PRESUN, INVENTURA | – | ✓ | ✓ | – | ✓ |
+| KOREKCE | – | – | ✓ | – | ✓ |
+| BOX_EDIT, UZIVATEL_EDIT | – | – | – | – | ✓ |
+| BLOKACE | – | ✓ | ✓ | – | ✓ |
+| RUCNI_POTVRZENI | – | – | ✓ | – | ✓ |
+| UPOZORNENI_UZAVRIT | – | – | ✓ | – | ✓ |
+| KMEN_EDIT, STAT_EDIT | – | – | – | ✓ | ✓ |
+| AUDIT_CIST | – | – | ✓ | ✓ | ✓ |
 
 ## Náš výklad (změní se jedním rozhodnutím)
 
@@ -71,14 +113,14 @@ Schéma 001 ještě nikde v provozu neběželo, proto `Dil.Poznamka` přibyl př
 | 12.3 Přesun | PRESUN-OUT + PRESUN-IN se stejným TransakceID, cíl kompatibilní a prázdný, jen celá dávka | `POST /api/sklad/presun` bez množství (WHOLE_BATCH_ONLY); „oblast“ = pracoviště (Q-07, A-01) | ✔ |
 | 13 STAT, min, max | OK / NA MINIMU / POD MINIMEM / VYČERPÁNO; jedno otevřené upozornění, uzavře se nad minimem; jedno aktivní přiřazení na pozici | `sklad.domena.stav_zasoby`, `vyhodnot_upozorneni`; filtrovaný UNIQUE index `UX_StatickeUmisteni_Pozice_Aktivni` | ✔ (stav 0 při minimu 0 = VYČERPÁNO, N-08) |
 | 13.1 Monitoring | souhrn, jedním klikem jen problémové, filtry, STAT a DYN zvlášť, klik na díl i na umístění | `GET /api/prehledy/zasoby` (`jenProblemove`, `jenSeStat`, `mista[]`); Z-05, V-01 | ✔ |
-| 14 Laser | první operace LASER, filtry materiál, tloušťka, operace, pod maximem; chybí = Maximum − STAT | `GET /api/prehledy/laser`; „doporučeno vyrobit“ s přepínačem `odecitatDyn`, dokud se nerozhodne Q-22 | ✔ (Q-22 otevřená) |
+| 14 Laser | první operace LASER, filtry materiál, tloušťka, operace, pod maximem; chybí = Maximum − STAT | `GET /api/prehledy/laser`; „doporučeno vyrobit“ s přepínačem `odecitatDyn` podle D-28 (základ Maximum − STAT − DYN, zaokrouhlení nahoru na standardní dávku) | ✔ (rozhodnuto D-28, provádí G) |
 | 15 Karta dílu | kmenová data, Vault (jinak „Výkres ve Vaultu není přiřazen“), STAT s aktuálně/min/max a chybí do maxima, DYN umístění, historie | `GET /api/prehledy/dily/{id}/karta`; Z-06; text pro chybějící Vault řeší UI (komentář v kontraktu) | ✔ |
 | 16 Vyhledávání | jedno vyhledávání pro díl, box, STAT a DYN pozici, regál; filtry pracoviště, operace, materiál, tloušťka, typ boxu, stav; vždy přepnout SVG a zvýraznit | `GET /api/prehledy/hledat`, `/sken/{kod}`; `zvyrazneni` regál → úroveň → box → přihrádka; více výsledků = seznam | ✔ |
 | 17 SVG regálů | mm, viewBox z boxů a okrajů, řazení podle Poradi, svislé centrování, přihrádky podle konfigurace, zvýraznění, popup | `GET /api/prehledy/urovne/{id}/rozlozeni`; Z-07; vzhled zvýraznění a popupu je práce UI (fáze 3) | ✔ |
 | 17.1 Princip SVG | kroky 1–8, vzorce X, šířky a výšky, barvy | `struktura.domena.rozmisteni_boxu` přesně podle vzorců; barvy Z-01, Z-03 | ✔ |
 | 17.2 Výstup API | metadata úrovně, seřazené Pozice, Box, rozměry, typ, členění, vnitřní pozice, obsah a stav | Z-02 | ✔ |
-| 18 Inventura | celý sklad i rozsah, slepá, korekce pohybem, JINÝ DÍL bez přepisu DilID | rozsahy FULL…POZICE, stavy ROZPRACOVANA/DOKONCENA/ZRUSENA, `zauctuj_korekci` | ✔ (zaúčtování nalezeného dílu ve STAT upřesňuje Q-17) |
-| 19 Role a terminály | OPER, SKL, MISTR, TECH, ADMIN; N:M přes RoleOpravneni; PIN jen hash; Terminal s kódem, názvem, pracovištěm a Aktivni | seed rolí, `RoleOpravneni`, `PinHash` (argon2), tabulka `Terminal` | ✔ (oprávnění rolím čeká na G4) |
+| 18 Inventura | celý sklad i rozsah, slepá, korekce pohybem, JINÝ DÍL bez přepisu DilID | rozsahy FULL…POZICE, stavy ROZPRACOVANA/DOKONCENA/ZRUSENA, `zauctuj_korekci`; inventura za provozu bez celoskladového zámku a korekce jiného dílu podle D-26 a D-27, na to sloupec `InventuraPolozka.PosledniPohybID` (migrace 005) | ✔ (rozhodnuto D-26 a D-27, provádí F) |
+| 19 Role a terminály | OPER, SKL, MISTR, TECH, ADMIN; N:M přes RoleOpravneni; PIN jen hash; Terminal s kódem, názvem, pracovištěm a Aktivni | seed rolí, `RoleOpravneni` – výchozí oprávnění podle matice G4 (migrace 005, D-23), `PinHash` (argon2), tabulka `Terminal` | ✔ (matice G4 zapsána a otestována) |
 | 20 Administrace | díly, číselníky, firmy, pracoviště, regály, úrovně, boxy, STAT místa, min/max, uživatelé, role; žádné ruční přepsání počtu kusů; deaktivace místo DELETE; audit zásadních změn | endpointy C, D, E a B; počet kusů mění jen příjem, výdej, přesun, inventura a korekce; `004` bere DELETE; `AuditZmen` | ✔ kromě firem (D-10) |
 | 21 Oblasti API | čtení úrovně, vyhledávání, kandidáti, příjem a výdej, přesun, inventura, administrace | všechny oblasti mají endpointy (73 + 4 Platformy) | ✔ (V-02) |
 | 21.1 Datové kontrakty | ID od klienta nejsou důvěryhodná; před změnou znovu načíst stav ze SQL, ověřit oprávnění a podmínky | služby čtou stav uvnitř `@transakce` po zamčení pozic (ADR-0004, 0005); kontrola jen v JS se nepočítá | ✔ |
