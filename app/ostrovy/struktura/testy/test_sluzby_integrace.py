@@ -70,7 +70,7 @@ class ZakladSluzeb(ZakladStruktury):
             hloubka_plochy_mm=Decimal(plocha[1])), self.kdo)
 
     def box(self, uroven_id: int, cleneni: str = "C4", rozmer=(400, 360), **pole):
-        """Box službou (kontrakt NovyBoxVstup); `pole` = poradi, typ_boxu, cislo_boxu, cleneni_id."""
+        """Box službou (kontrakt NovyBoxVstup); `pole` = poradi, typ_boxu, cislo_boxu, kod_boxu, cleneni_id."""
         zaklad = dict(typ_boxu="DYN", cleneni_id=self.cleneni_id[cleneni],
                       delka_mm=Decimal(rozmer[0]), hloubka_mm=Decimal(rozmer[1]))
         return sluzby.zaloz_box.__wrapped__(self.spoj, uroven_id, NovyBoxVstup(**(zaklad | pole)), self.kdo)
@@ -380,7 +380,8 @@ class TestBlokace(ZakladSluzeb):
 
 
 class TestZalozeniBoxu(ZakladSluzeb):
-    """Bod 4: založení boxu službou – pořadí na úrovni, vnitřní pozice ze šablony, FullBoxKlic."""
+    """Bod 4: založení boxu službou – pořadí na úrovni, vnitřní pozice ze šablony, FullBoxKlic,
+    nepovinný kód z předtištěného štítku (D-35)."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -417,6 +418,48 @@ class TestZalozeniBoxu(ZakladSluzeb):
         self.assertEqual(self.spoj.hodnota("SELECT COUNT(*) FROM dbo.Box WHERE PoziceID IN"
                                            " (SELECT PoziceID FROM dbo.Pozice WHERE UrovenID = ?)", self.uroven_id), 1)
         self.over_integrity(self.uroven_id)
+
+    def test_kod_ze_stitku_se_normalizuje(self):
+        """D-35 (11.2): nepovinný kód ze štítku – „b… 037 " → B…037, FullBoxKlic sedí, řada pokračuje dál."""
+        stitek = self.box(self.uroven_id, kod_boxu=f" b{self.kod.lower()} 037 ")
+        self.assertEqual((stitek.kod_boxu, stitek.full_box_klic),
+                         (f"B{self.kod}037", f"HOUFEK-{self.kod}-R01-U01-B{self.kod}037"))
+        self.assertEqual(self.prihradky(stitek.box_id), self.ocekavane_prihradky("C4", "DYN", (400, 360)))
+        self.assertEqual(self.box(self.uroven_id).kod_boxu, f"B{self.kod}038")   # bez kódu = další číslo (11.2.1)
+        self.over_integrity(self.uroven_id)
+
+    def test_stitek_z_jine_rady_nebo_pracoviste(self):
+        """Kód cizí řady či pracoviště je neplatný kód (11.2), ne kolize; box ani Pozice nevznikne."""
+        _, _, _, kod_jineho = self.nova_uroven()
+        for prekvapeni in [dict(kod_boxu="BSTAT037"),                    # STAT řada u DYN boxu
+                           dict(kod_boxu="BPLE037", typ_boxu="STAT"),    # DYN řada u STAT boxu
+                           dict(kod_boxu=f"B{kod_jineho}037")]:          # cizí pracoviště
+            chyba = self.chyba(self.box, self.uroven_id, kod="VALIDATION_ERROR", **prekvapeni)
+            self.assertEqual(self.chyby_pole(chyba), {"kodBoxu"}, prekvapeni)
+        self.assertEqual(self.spoj.hodnota("SELECT COUNT(*) FROM dbo.Pozice WHERE UrovenID = ?",
+                                           self.uroven_id), 0)
+
+    def test_stitek_existujiciho_a_vyrazeneho_boxu(self):
+        """Kód už vydaného boxu, i vyřazeného, je ALREADY_EXISTS a nic nevznikne (UQ_Box_KodBoxu)."""
+        prvni = self.box(self.uroven_id, kod_boxu=f"B{self.kod}005")
+        for prekvapeni in [dict(kod_boxu=f"b{self.kod.lower()} 005"),            # normalizace sedne na existující
+                           dict(kod_boxu=f"B{self.kod}005", cislo_boxu=5)]:      # kolize i zadané číslo
+            self.assertEqual(self.chyba(self.box, self.uroven_id, kod="ALREADY_EXISTS", **prekvapeni).kod,
+                             "ALREADY_EXISTS", prekvapeni)
+        self.deaktivuj_box(prvni.box_id)
+        self.assertEqual(self.chyba(self.box, self.uroven_id, kod="ALREADY_EXISTS",
+                                    kod_boxu=f"B{self.kod}005").kod, "ALREADY_EXISTS")
+        self.assertEqual(self.spoj.hodnota("SELECT COUNT(*) FROM dbo.Box WHERE KodBoxu LIKE ?", f"B{self.kod}%"), 1)
+        self.assertEqual(self.spoj.hodnota("SELECT COUNT(*) FROM dbo.Pozice WHERE UrovenID = ?", self.uroven_id), 1)
+
+    def test_stitek_a_cislo_se_musi_shodovat(self):
+        """Poslal-li klient kodBoxu i cisloBoxu, musí sedět na stejné číslo (D-35); shoda projde."""
+        shodny = self.box(self.uroven_id, kod_boxu=f"b{self.kod.lower()} 042", cislo_boxu=42)
+        self.assertEqual(shodny.kod_boxu, f"B{self.kod}042")
+        chyba = self.chyba(self.box, self.uroven_id, kod="VALIDATION_ERROR",
+                           kod_boxu=f"B{self.kod}043", cislo_boxu=44)
+        self.assertEqual(self.chyby_pole(chyba), {"kodBoxu"})
+        self.assertEqual(self.spoj.hodnota("SELECT COUNT(*) FROM dbo.Pozice WHERE UrovenID = ?", self.uroven_id), 1)
 
 
 class TestVymenaBoxu(ZakladSluzeb):

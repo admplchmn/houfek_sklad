@@ -249,10 +249,10 @@ def zaloz_box(spoj: Spojeni, uroven_id: int, vstup: NovyBoxVstup, kdo: Kontext) 
     """Pozice (pořadí na úrovni) + Box + vnitřní pozice ze šablony. Boxy od zvoleného pořadí se posunou.
 
     Vznik boxu se neaudituje (kap. 25). Chyby: NOT_FOUND (úroveň, členění), VALIDATION_ERROR (pořadí,
-    číslo), ALREADY_EXISTS (kód boxu), BOX_SERIES_FULL.
+    číslo, kód), ALREADY_EXISTS (kód boxu), BOX_SERIES_FULL.
     """
     uroven = _nacti(repozitar.uroven(spoj, uroven_id), f"Úroveň {uroven_id} neexistuje.")
-    kod_boxu = _kod_boxu(spoj, uroven["RegalID"], vstup.typ_boxu, vstup.cislo_boxu)
+    kod_boxu = _kod_boxu(spoj, uroven["RegalID"], vstup.typ_boxu, vstup.cislo_boxu, vstup.kod_boxu)
     box_id = repozitar.zaloz_box(spoj, uroven_id, vstup.poradi, vstup.typ_boxu,
                                  _kod_cleneni(spoj, vstup.cleneni_id), vstup.delka_mm, vstup.hloubka_mm, kod_boxu)
     return _detail(spoj, _nacti_box(spoj, box_id))
@@ -400,14 +400,24 @@ def _kod_cleneni(spoj: Spojeni, cleneni_id: int) -> str:
     return _nacti_cleneni(spoj, cleneni_id)["KodCleneni"]
 
 
-def _kod_boxu(spoj: Spojeni, regal_id: int, typ_boxu: str, cislo: int | None) -> str | None:
-    """Kód nového boxu z čísla řady (11.2.1); řada platí podle pracoviště regálu.
+def _kod_boxu(spoj: Spojeni, regal_id: int, typ_boxu: str, cislo: int | None,
+              kod_ze_stitku: str | None = None) -> str | None:
+    """Kód nového boxu ze štítku (11.2, D-35) nebo z čísla řady (11.2.1); řada platí podle pracoviště regálu.
 
-    None = repozitář vydá další volné číslo. Chyby: NOT_FOUND (regál), VALIDATION_ERROR (číslo).
+    Poslaný kód se normalizuje a ověří `domena.over_kod_boxu`; pošle-li klient číslo i kód, musí sedět
+    na stejné číslo. None = repozitář vydá další volné číslo a jedinečnost kódu ohlídá sám (UQ_Box_KodBoxu).
+    Chyby: NOT_FOUND (regál), VALIDATION_ERROR (číslo, kód, neshoda).
     """
-    if cislo is None:
+    if cislo is None and kod_ze_stitku is None:
         return None
-    return domena.kod_boxu(typ_boxu, _nacti_regal(spoj, regal_id)["KodPracoviste"], cislo)
+    pracoviste = _nacti_regal(spoj, regal_id)["KodPracoviste"]
+    if kod_ze_stitku is None:
+        return domena.kod_boxu(typ_boxu, pracoviste, cislo)
+    kod = domena.over_kod_boxu(typ_boxu, pracoviste, kod_ze_stitku)
+    if cislo is not None and cislo != domena.cislo_boxu(kod):
+        zprava = f"Kód boxu {kod} neodpovídá číslu boxu {cislo}."
+        raise chyba_vstupu(zprava, {"kodBoxu": zprava})
+    return kod
 
 
 def _ids_pozic(spoj: Spojeni, box_id: int) -> list[int]:
