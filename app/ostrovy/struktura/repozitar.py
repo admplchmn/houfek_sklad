@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
+from typing import Any
 
 from app.platforma.chyby import AppError, chyba_vstupu
 from app.platforma.db import Spojeni, po_davkach
@@ -166,6 +167,137 @@ def nacti_ciselniky(spoj: Spojeni) -> dict[str, tuple[PolozkaCiselniku, ...]]:
     }
 
 
+# --- čtení struktury pro služby -----------------------------------------------------------------
+# Služba z řádků staví DTO kontraktu i řádky AuditZmen a potřebuje k tomu původní hodnoty sloupců,
+# proto se sem nepřekládá na modely – vrací se surové řádky s názvy sloupců jako klíči.
+
+_SLOUPCE_REGALU = "r.RegalID, r.PracovisteID, pr.KodPracoviste, r.KodRegalu, r.NazevRegalu, r.Aktivni"
+_FROM_REGALU = "FROM dbo.Regal AS r JOIN dbo.Pracoviste AS pr ON pr.PracovisteID = r.PracovisteID"
+_SLOUPCE_UROVNE = ("u.UrovenID, u.RegalID, u.KodUrovne, u.Poradi, u.DelkaPlochyMM, u.HloubkaPlochyMM, u.Aktivni")
+# Aktivní box je na pozici nejvýš jeden (UX_Box_Pozice_Aktivni), takže stačí spočíst aktivní boxy.
+_POCET_BOXU = ("(SELECT COUNT(*) FROM dbo.Box AS b JOIN dbo.Pozice AS po ON po.PoziceID = b.PoziceID"
+               " WHERE po.UrovenID = u.UrovenID AND b.Aktivni = 1) AS PocetBoxu")
+_SLOUPCE_BOXU = """b.BoxID, b.KodBoxu, b.CleneniBoxuID, b.DelkaMM, b.HloubkaMM, b.FullBoxKlic,
+       b.Blokovany AS BoxBlokovany, b.Aktivni, po.PoziceID, po.Poradi, t.KodTypu, c.KodCleneni, u.UrovenID,
+       u.KodUrovne, r.RegalID, r.KodRegalu, pr.PracovisteID, pr.KodPracoviste"""
+_FROM_BOXU = ("FROM dbo.Box AS b JOIN dbo.Pozice AS po ON po.PoziceID = b.PoziceID"
+              " JOIN dbo.Uroven AS u ON u.UrovenID = po.UrovenID"
+              " JOIN dbo.Regal AS r ON r.RegalID = u.RegalID"
+              " JOIN dbo.Pracoviste AS pr ON pr.PracovisteID = r.PracovisteID"
+              " JOIN dbo.TypBoxu AS t ON t.TypBoxuID = b.TypBoxuID"
+              " JOIN dbo.CleneniBoxu AS c ON c.CleneniBoxuID = b.CleneniBoxuID")
+# Velikost i pořadí v boxu berou z šablony (VnitrniPoziceBoxu žádné Poradi nemá, Q-06). Vlastní rozměr
+# má jen pozice (C7), proto má vlastní název – ať se nesplete s rozměrem boxu ve stejném SELECTu.
+_SLOUPCE_POZICE = ("vp.VnitrniPoziceID, vp.KodPozice, vp.Blokovany, vp.DelkaMM AS RozmerC7DelkaMM,"
+                   " vp.HloubkaMM AS RozmerC7HloubkaMM, v.KodVelikosti, s.Poradi AS PoradiVBoxu")
+_JOIN_POZICE = ("JOIN dbo.VnitrniPoziceBoxu AS vp ON vp.BoxID = b.BoxID"
+                " JOIN dbo.VelikostPozice AS v ON v.VelikostPoziceID = vp.VelikostPoziceID"
+                " JOIN dbo.SablonaCleneni AS s ON s.SablonaCleneniID = vp.SablonaCleneniID")
+
+
+def _kde(**sloupce: Any) -> tuple[str, list[Any]]:
+    """WHERE ze zadaných filtrů (None = se nefiltruje); názvy sloupců volá jen služba, nikdy vstup."""
+    jmena = [j for j, hodnota in sloupce.items() if hodnota is not None]
+    kde = ("WHERE " + " AND ".join(f"{jmeno} = ?" for jmeno in jmena)) if jmena else ""
+    return kde, [sloupce[jmeno] for jmeno in jmena]
+
+
+def pracoviste(spoj: Spojeni, pracoviste_id: int) -> dict[str, Any] | None:
+    """Pracoviště podle ID, i vyřazené (regály a úrovně v něm zůstávají)."""
+    return spoj.jeden("SELECT PracovisteID, KodPracoviste, NazevPracoviste, Aktivni FROM dbo.Pracoviste"
+                      " WHERE PracovisteID = ?", pracoviste_id)
+
+
+def seznam_pracovistu(spoj: Spojeni, aktivni: bool | None) -> list[dict[str, Any]]:
+    kde, parametry = _kde(Aktivni=aktivni)
+    return list(spoj.dotaz("SELECT PracovisteID, KodPracoviste, NazevPracoviste, Aktivni FROM dbo.Pracoviste"
+                           f" {kde} ORDER BY PracovisteID", *parametry))
+
+
+def regal(spoj: Spojeni, regal_id: int) -> dict[str, Any] | None:
+    return spoj.jeden(f"SELECT {_SLOUPCE_REGALU} {_FROM_REGALU} WHERE r.RegalID = ?", regal_id)
+
+
+def seznam_regalu(spoj: Spojeni, pracoviste_id: int | None, aktivni: bool | None) -> list[dict[str, Any]]:
+    kde, parametry = _kde(**{"r.PracovisteID": pracoviste_id, "r.Aktivni": aktivni})
+    return list(spoj.dotaz(f"SELECT {_SLOUPCE_REGALU} {_FROM_REGALU} {kde}"
+                           " ORDER BY r.PracovisteID, r.KodRegalu", *parametry))
+
+
+def uroven(spoj: Spojeni, uroven_id: int) -> dict[str, Any] | None:
+    return spoj.jeden(f"SELECT {_SLOUPCE_UROVNE}, {_POCET_BOXU} FROM dbo.Uroven AS u"
+                      " WHERE u.UrovenID = ?", uroven_id)
+
+
+def seznam_urovni(spoj: Spojeni, regal_id: int, aktivni: bool | None) -> list[dict[str, Any]]:
+    """Úrovně regálu shora dolů (Poradi DESC), s počtem aktivních boxů."""
+    kde, parametry = _kde(**{"u.RegalID": regal_id, "u.Aktivni": aktivni})
+    return list(spoj.dotaz(f"SELECT {_SLOUPCE_UROVNE}, {_POCET_BOXU} FROM dbo.Uroven AS u {kde}"
+                           " ORDER BY u.Poradi DESC", *parametry))
+
+
+def box(spoj: Spojeni, box_id: int) -> dict[str, Any] | None:
+    """Box včetně úrovně a pořadí na ní; vrací i vyřazený box – po výměně (T22) se musí dohledat."""
+    return spoj.jeden(f"SELECT {_SLOUPCE_BOXU} {_FROM_BOXU} WHERE b.BoxID = ?", box_id)
+
+
+def box_podle_kodu(spoj: Spojeni, kod_boxu: str) -> dict[str, Any] | None:
+    """Aktivní box podle kódu ze štítku (blokace, kontrola adresy)."""
+    return spoj.jeden(f"SELECT {_SLOUPCE_BOXU} {_FROM_BOXU} WHERE b.KodBoxu = ? AND b.Aktivni = 1", kod_boxu)
+
+
+def boxy_urovne(spoj: Spojeni, uroven_id: int) -> list[dict[str, Any]]:
+    """Aktivní boxy úrovně zleva doprava (Pozice.Poradi ASC, kap. 6)."""
+    return list(spoj.dotaz(f"SELECT {_SLOUPCE_BOXU} {_FROM_BOXU} WHERE u.UrovenID = ? AND b.Aktivni = 1"
+                           " ORDER BY po.Poradi", uroven_id))
+
+
+def pozice_boxu(spoj: Spojeni, box_id: int) -> list[dict[str, Any]]:
+    """Aktivní pozice aktivního boxu v pořadí šablony; vyřazený box už žádná místa nevrací."""
+    return list(spoj.dotaz(f"SELECT {_SLOUPCE_POZICE} {_FROM_BOXU} {_JOIN_POZICE}"
+                           " WHERE b.BoxID = ? AND b.Aktivni = 1 AND vp.Aktivni = 1 ORDER BY s.Poradi", box_id))
+
+
+def vnitrni_pozice(spoj: Spojeni, vnitrni_pozice_id: int) -> dict[str, Any] | None:
+    """Pozice i s boxem a úrovní (detail pozice, rozměr C7); vyřazené místo se nevrátí."""
+    return spoj.jeden(f"SELECT {_SLOUPCE_BOXU}, {_SLOUPCE_POZICE} {_FROM_BOXU} {_JOIN_POZICE}"
+                      " WHERE vp.VnitrniPoziceID = ? AND b.Aktivni = 1 AND vp.Aktivni = 1", vnitrni_pozice_id)
+
+
+def cleneni(spoj: Spojeni, cleneni_id: int) -> dict[str, Any] | None:
+    """Konfigurace členění podle ID – služba z ní má kód pro hlášku i NOT_FOUND pro špatné ID."""
+    return spoj.jeden("SELECT CleneniBoxuID, KodCleneni, PocetPozic FROM dbo.CleneniBoxu"
+                      " WHERE CleneniBoxuID = ?", cleneni_id)
+
+
+def polozky_cleneni(spoj: Spojeni) -> list[dict[str, Any]]:
+    """Členění C1–C7 i s přihrádkami šablony (Q-06); služba z řádků seskládá CleneniRadek."""
+    return list(spoj.dotaz("SELECT c.CleneniBoxuID, c.KodCleneni, c.PocetPozic, s.DynKod, s.StatKod, s.Poradi,"
+                           " s.Rada, s.Sloupec, s.RelX, s.RelY, s.RelSirka, s.RelHloubka, v.KodVelikosti"
+                           " FROM dbo.CleneniBoxu AS c JOIN dbo.SablonaCleneni AS s"
+                           " ON s.CleneniBoxuID = c.CleneniBoxuID"
+                           " JOIN dbo.VelikostPozice AS v ON v.VelikostPoziceID = s.VelikostPoziceID"
+                           " ORDER BY c.CleneniBoxuID, s.Poradi"))
+
+
+# Kódy pozic boxu podle pohledu ostrova E – důvod, proč s boxem nehne strukturální operace (Q-27).
+# Jméno pohledu do dotazu volá jen tento modul, nikdy vstup od klienta.
+_KODY_POZIC = ("SELECT b.KodBoxu + '-' + vp.KodPozice AS Kod FROM dbo.VnitrniPoziceBoxu AS vp"
+               " JOIN dbo.Box AS b ON b.BoxID = vp.BoxID JOIN {pohled} AS x"
+               " ON x.VnitrniPoziceID = vp.VnitrniPoziceID"
+               " WHERE vp.BoxID = ? AND vp.Aktivni = 1 ORDER BY vp.VnitrniPoziceID")
+
+
+def kody_pozic(spoj: Spojeni, box_id: int, pohled: str) -> list[str]:
+    return [r["Kod"] for r in spoj.dotaz(_KODY_POZIC.format(pohled=pohled), box_id)]
+
+
+def ma_obsah(spoj: Spojeni, vnitrni_pozice_id: int) -> bool:
+    """Na pozici je zásoba (řádek v_ObsahPozice znamená alespoň 1 ks) – blokuje rozměr C7 (Q-01)."""
+    return spoj.jeden("SELECT 1 AS Je FROM dbo.v_ObsahPozice WHERE VnitrniPoziceID = ?",
+                      vnitrni_pozice_id) is not None
+
+
 # --- rozložení úrovně (SVG, 17.1) ---------------------------------------------------------------
 
 
@@ -212,14 +344,9 @@ def rozlozeni_urovne(spoj: Spojeni, uroven_id: int) -> rozhrani.RozlozeniUrovne:
         " JOIN dbo.Pracoviste AS p ON p.PracovisteID = r.PracovisteID WHERE u.UrovenID = ?", uroven_id)
     if uroven is None:
         raise AppError("NOT_FOUND", f"Úroveň {uroven_id} neexistuje.")
-    boxy = [_BoxNaUrovni(r["BoxID"], r["KodBoxu"], r["TypBoxu"], r["KodCleneni"], bool(r["Blokovany"]),
+    boxy = [_BoxNaUrovni(r["BoxID"], r["KodBoxu"], r["KodTypu"], r["KodCleneni"], bool(r["BoxBlokovany"]),
                          r["DelkaMM"], r["HloubkaMM"], r["Poradi"])
-            for r in spoj.dotaz("SELECT b.BoxID, b.KodBoxu, b.Blokovany, b.DelkaMM, b.HloubkaMM, po.Poradi,"
-                                " t.KodTypu AS TypBoxu, c.KodCleneni FROM dbo.Box AS b"
-                                " JOIN dbo.Pozice AS po ON po.PoziceID = b.PoziceID"
-                                " JOIN dbo.TypBoxu AS t ON t.TypBoxuID = b.TypBoxuID"
-                                " JOIN dbo.CleneniBoxu AS c ON c.CleneniBoxuID = b.CleneniBoxuID"
-                                " WHERE po.UrovenID = ? AND b.Aktivni = 1 ORDER BY po.Poradi", uroven_id)]
+            for r in boxy_urovne(spoj, uroven_id)]
     prihradky = _prihradky_vsech_cleneni(spoj)
     po_boxich: dict[int, list[_PoziceVBoxu]] = {}
     for r in spoj.dotaz("SELECT m.VnitrniPoziceID, m.BoxID, m.KodPozice, m.Velikost, m.Blokovano"
@@ -293,27 +420,49 @@ def zaloz_box(spoj: Spojeni, uroven_id: int, poradi: int | None, typ_boxu: str, 
 
     Chyby: ALREADY_EXISTS, NOT_FOUND, VALIDATION_ERROR, BOX_SERIES_FULL (řada čísel boxu je obsazená).
     """
-    if typ_boxu not in ("DYN", "STAT"):
-        zprava = "Povolené typy boxu jsou DYN a STAT."
-        raise chyba_vstupu(zprava, {"typBoxu": zprava})
+    _over_typ_boxu(typ_boxu)
     _over_rozmer("boxu", delka_mm, hloubka_mm)
+    adresa = _adresa_urovne(spoj, uroven_id)
+    cleneni_id = _cleneni_podle_kodu(spoj, kod_cleneni)
+    prihradky, velikosti = _sablona_cleneni(spoj, cleneni_id)
+    kod = _kod_boxu_pro_novy_box(spoj, typ_boxu, adresa["KodPracoviste"], kod_boxu)
+    typ_boxu_id = spoj.hodnota("SELECT TypBoxuID FROM dbo.TypBoxu WHERE KodTypu = ?", typ_boxu)
+    nova_pozice = _vloz_pozici(spoj, uroven_id, poradi)
+    box_id = spoj.vloz(
+        "INSERT INTO dbo.Box (PoziceID, KodBoxu, TypBoxuID, CleneniBoxuID, DelkaMM, HloubkaMM, FullBoxKlic)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?)", nova_pozice, kod, typ_boxu_id, cleneni_id, delka_mm,
+        hloubka_mm, domena.full_box_klic(adresa["KodPracoviste"], adresa["KodRegalu"], adresa["KodUrovne"], kod))
+    _vloz_vnitri_pozice(spoj, box_id, typ_boxu, prihradky, velikosti, delka_mm, hloubka_mm)
+    return box_id
+
+
+def _adresa_urovne(spoj: Spojeni, uroven_id: int) -> dict:
+    """Kódy úrovně, regálu a pracoviště – potřebné pro adresu (FullBoxKlic) nového i přesunovaného boxu."""
     adresa = spoj.jeden("SELECT u.KodUrovne, r.KodRegalu, p.KodPracoviste FROM dbo.Uroven AS u"
                         " JOIN dbo.Regal AS r ON r.RegalID = u.RegalID"
                         " JOIN dbo.Pracoviste AS p ON p.PracovisteID = r.PracovisteID"
                         " WHERE u.UrovenID = ? AND u.Aktivni = 1 AND r.Aktivni = 1", uroven_id)
     if adresa is None:
         raise AppError("NOT_FOUND", f"Úroveň {uroven_id} neexistuje nebo není aktivní.")
+    return adresa
+
+
+def _cleneni_podle_kodu(spoj: Spojeni, kod_cleneni: str) -> int:
     cleneni = spoj.jeden("SELECT CleneniBoxuID FROM dbo.CleneniBoxu WHERE KodCleneni = ?", kod_cleneni)
     if cleneni is None:
         raise AppError("NOT_FOUND", f"Členění {kod_cleneni} neexistuje (povolené C1 až C7).")
-    prihradky, velikosti = _sablona_cleneni(spoj, cleneni["CleneniBoxuID"])
-    kod = _kod_boxu_pro_novy_box(spoj, typ_boxu, adresa["KodPracoviste"], kod_boxu)
-    typ_boxu_id = spoj.hodnota("SELECT TypBoxuID FROM dbo.TypBoxu WHERE KodTypu = ?", typ_boxu)
-    nova_pozice = _vloz_pozici(spoj, uroven_id, poradi)
-    box_id = spoj.vloz(
-        "INSERT INTO dbo.Box (PoziceID, KodBoxu, TypBoxuID, CleneniBoxuID, DelkaMM, HloubkaMM, FullBoxKlic)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?)", nova_pozice, kod, typ_boxu_id, cleneni["CleneniBoxuID"], delka_mm,
-        hloubka_mm, domena.full_box_klic(adresa["KodPracoviste"], adresa["KodRegalu"], adresa["KodUrovne"], kod))
+    return int(cleneni["CleneniBoxuID"])
+
+
+def _over_typ_boxu(typ_boxu: str) -> None:
+    if typ_boxu not in ("DYN", "STAT"):
+        zprava = "Povolené typy boxu jsou DYN a STAT."
+        raise chyba_vstupu(zprava, {"typBoxu": zprava})
+
+
+def _vloz_vnitri_pozice(spoj: Spojeni, box_id: int, typ_boxu: str, prihradky: list[domena.PrihradkaSablony],
+                        velikosti: dict[str, int], delka_mm: Decimal, hloubka_mm: Decimal) -> None:
+    """Vnitřní pozice ze šablony (Q-05, Q-06) pro nový, vyměněný i rekonfigurovaný box."""
     for pozice in domena.pozice_ze_sablony(typ_boxu, prihradky):
         # rozměr se ukládá jen u variabilní pozice C7 (V6); nový box žádný vlastní rozměr nemá,
         # proto se použije rozměr boxu (Q-01). U ostatních velikostí musejí být oba sloupce NULL.
@@ -321,7 +470,6 @@ def zaloz_box(spoj: Spojeni, uroven_id: int, poradi: int | None, typ_boxu: str, 
         spoj.proved("INSERT INTO dbo.VnitrniPoziceBoxu (BoxID, SablonaCleneniID, KodPozice, VelikostPoziceID,"
                     " DelkaMM, HloubkaMM) VALUES (?, ?, ?, ?, ?, ?)",
                     box_id, pozice.sablona_cleneni_id, pozice.kod_pozice, velikosti[pozice.velikost], *c7)
-    return box_id
 
 
 def _over_rozmer(co: str, delka_mm: Decimal, hloubka_mm: Decimal) -> None:
@@ -372,16 +520,122 @@ def _vloz_pozici(spoj: Spojeni, uroven_id: int, poradi: int | None) -> int:
 
     Pozice ostatních boxů (PoziceID) se nemění, mění se jen Poradi. Chyby: VALIDATION_ERROR (pořadí).
     """
-    puvodni = {r["PoziceID"]: r["Poradi"] for r in spoj.dotaz(
-        "SELECT PoziceID, Poradi FROM dbo.Pozice WHERE UrovenID = ? AND Aktivni = 1 ORDER BY Poradi", uroven_id)}
+    puvodni = _poradi_urovne(spoj, uroven_id)
     zmeny = domena.zmeny_poradi(domena.vloz_do_poradi(list(puvodni), _NOVA_POZICE, poradi), puvodni)
     nove_poradi = zmeny.pop(_NOVA_POZICE)
-    if zmeny:
-        znacky = ", ".join("?" for _ in zmeny)
-        # dva kroky po sobě: jedním dotazem na cílové hodnoty by se pořadí dočasně opakovalo
-        # a narazilo na unikátní index UX_Pozice_Uroven_Poradi_Aktivni (Δ2).
-        spoj.proved(f"UPDATE dbo.Pozice SET Poradi = Poradi + {_PROVISORNI_POSUN} WHERE PoziceID IN ({znacky})",
-                    *zmeny)
-        for pozice_id, cilove_poradi in zmeny.items():
-            spoj.proved("UPDATE dbo.Pozice SET Poradi = ? WHERE PoziceID = ?", cilove_poradi, pozice_id)
+    _nastav_poradi(spoj, zmeny)
     return spoj.vloz("INSERT INTO dbo.Pozice (UrovenID, Poradi) VALUES (?, ?)", uroven_id, nove_poradi)
+
+
+def _poradi_urovne(spoj: Spojeni, uroven_id: int) -> dict[int, int]:
+    """{PoziceID: Poradi} aktivních pozic úrovně, zleva doprava (vyřazené boxy do pořadí nevstupují)."""
+    return {r["PoziceID"]: r["Poradi"] for r in spoj.dotaz(
+        "SELECT PoziceID, Poradi FROM dbo.Pozice WHERE UrovenID = ? AND Aktivni = 1 ORDER BY Poradi", uroven_id)}
+
+
+def _nastav_poradi(spoj: Spojeni, zmeny: dict[int, int]) -> None:
+    """Zapíše nová pořadí pozic; dělá to ve dvou krocích kvůli unikátnímu indexu pořadí (Δ2).
+
+    Jedním dotazem na cílové hodnoty by se pořadí dočasně opakovalo a narazilo na
+    UX_Pozice_Uroven_Poradi_Aktivni, proto nejdřív bütün dotčených pozic o +10000.
+    """
+    if not zmeny:
+        return
+    znacky = ", ".join("?" for _ in zmeny)
+    spoj.proved(f"UPDATE dbo.Pozice SET Poradi = Poradi + {_PROVISORNI_POSUN} WHERE PoziceID IN ({znacky})",
+                *zmeny)
+    for pozice_id, cilove_poradi in zmeny.items():
+        spoj.proved("UPDATE dbo.Pozice SET Poradi = ? WHERE PoziceID = ?", cilove_poradi, pozice_id)
+
+
+def _vyrad_pozici(spoj: Spojeni, pozice_id: int, uroven_id: int) -> None:
+    """Vyřadí pozici boxu (přesun, vyřazení boxu) a boxy vpravo posune doleva."""
+    nastav_pole(spoj, "Pozice", pozice_id, {"Aktivni": False})
+    puvodni = _poradi_urovne(spoj, uroven_id)
+    _nastav_poradi(spoj, domena.zmeny_poradi(list(puvodni), puvodni))
+
+
+_ID_TABLEK = {"Pracoviste": "PracovisteID", "Regal": "RegalID", "Uroven": "UrovenID", "Pozice": "PoziceID",
+              "Box": "BoxID", "VnitrniPoziceBoxu": "VnitrniPoziceID"}
+
+
+def nastav_pole(spoj: Spojeni, tabulka: str, objekt_id: int, hodnoty: dict[str, Any]) -> None:
+    """UPDATE vlastní tabulky podle ID – názvy tabulek i sloupců volá jen služba, nikdy vstup."""
+    znacky = ", ".join(f"{sloupec} = ?" for sloupec in hodnoty)
+    spoj.proved(f"UPDATE dbo.{tabulka} SET {znacky} WHERE {_ID_TABLEK[tabulka]} = ?", *hodnoty.values(), objekt_id)
+
+
+def vymen_box(spoj: Spojeni, stary: dict[str, Any], typ_boxu: str, kod_cleneni: str, delka_mm: Decimal,
+              hloubka_mm: Decimal, kod_boxu: str | None) -> int:
+    """Výměna boxu (T22): starý box vyřadí a na jeho pozici založí nový. Vrací BoxID nového boxu.
+
+    Řádek Pozice se nemění, tedy ani PoziceID a pořadí na úrovni; starý box zůstává dohledat s
+    Aktivni = 0 a svým kódem. Prázdnost starého boxu ověřuje služba přes v_ObsahPozice a
+    v_StatickeMisto (P2), sem už jen operace, kterou pravidla dovolují.
+    Chyby: ALREADY_EXISTS, VALIDATION_ERROR, BOX_SERIES_FULL.
+    """
+    _over_typ_boxu(typ_boxu)
+    _over_rozmer("boxu", delka_mm, hloubka_mm)
+    adresa = _adresa_urovne(spoj, stary["UrovenID"])
+    kod = _kod_boxu_pro_novy_box(spoj, typ_boxu, adresa["KodPracoviste"], kod_boxu)
+    cleneni_id = _cleneni_podle_kodu(spoj, kod_cleneni)
+    prihradky, velikosti = _sablona_cleneni(spoj, cleneni_id)
+    typ_boxu_id = spoj.hodnota("SELECT TypBoxuID FROM dbo.TypBoxu WHERE KodTypu = ?", typ_boxu)
+    # starý box vyřadit jako první: unikátní index platí jen pro aktivní boxy (UX_Box_Pozice_Aktivni)
+    nastav_pole(spoj, "Box", stary["BoxID"], {"Aktivni": False})
+    novy_id = spoj.vloz("INSERT INTO dbo.Box (PoziceID, KodBoxu, TypBoxuID, CleneniBoxuID, DelkaMM, HloubkaMM,"
+                        " FullBoxKlic) VALUES (?, ?, ?, ?, ?, ?, ?)", stary["PoziceID"], kod, typ_boxu_id,
+                        cleneni_id, delka_mm, hloubka_mm,
+                        domena.full_box_klic(adresa["KodPracoviste"], adresa["KodRegalu"], adresa["KodUrovne"], kod))
+    _vloz_vnitri_pozice(spoj, novy_id, typ_boxu, prihradky, velikosti, delka_mm, hloubka_mm)
+    return novy_id
+
+
+def presun_box(spoj: Spojeni, box: dict[str, Any], cil_uroven_id: int, poradi: int | None) -> None:
+    """Box i s obsahem na jinou úroveň, bez skladového pohybu – obsah zůstává na svých pozicích.
+
+    Na cílové úrovni se založí nová Pozice (boxy od `poradi` se posunou), box se na ni přepíše
+    a jeho původní Pozice se vyřadí – jinak by zůstala bez boxu (nález POZICE_BEZ_BOXU) – a zbytek
+    bývalé úrovně se přečísluje doleva. FullBoxKlic se přepočítá (Q-03), kódy pozic ne (Q-02).
+    Chyby: NOT_FOUND (úroveň), VALIDATION_ERROR (pořadí).
+    """
+    adresa = _adresa_urovne(spoj, cil_uroven_id)
+    nova_pozice = _vloz_pozici(spoj, cil_uroven_id, poradi)
+    nastav_pole(spoj, "Box", box["BoxID"],
+                {"PoziceID": nova_pozice,
+                 "FullBoxKlic": domena.full_box_klic(adresa["KodPracoviste"], adresa["KodRegalu"],
+                                                      adresa["KodUrovne"], box["KodBoxu"])})
+    _vyrad_pozici(spoj, box["PoziceID"], box["UrovenID"])
+
+
+def zmen_poradi_boxu(spoj: Spojeni, box: dict[str, Any], nove_poradi: int) -> None:
+    """Změna pořadí boxu na stejné úrovni (T23): přečísluje se jen Poradi, PoziceID zůstávají.
+
+    Chyby: VALIDATION_ERROR (pořadí mimo rozsah úrovně).
+    """
+    puvodni = _poradi_urovne(spoj, box["UrovenID"])
+    _nastav_poradi(spoj, domena.zmeny_poradi(
+        domena.presun_v_poradi(list(puvodni), box["PoziceID"], nove_poradi), puvodni))
+
+
+def rekonfiguruj_box(spoj: Spojeni, box: dict[str, Any], kod_cleneni: str) -> None:
+    """Nové členění prázdného boxu (Q-27): staré vnitřní pozice Aktivni = 0, nové ze šablony.
+
+    Vyřazené pozice zůstávají v historii, štítky nových se tisknou znovu (A-14). Nová variabilní
+    pozice C7 dostane rozměr boxu (Q-01), ten upraví POST /rozmer-c7. Chyby: NOT_FOUND (členění).
+    """
+    cleneni_id = _cleneni_podle_kodu(spoj, kod_cleneni)
+    prihradky, velikosti = _sablona_cleneni(spoj, cleneni_id)
+    spoj.proved("UPDATE dbo.VnitrniPoziceBoxu SET Aktivni = 0 WHERE BoxID = ? AND Aktivni = 1", box["BoxID"])
+    _vloz_vnitri_pozice(spoj, box["BoxID"], box["KodTypu"], prihradky, velikosti, box["DelkaMM"], box["HloubkaMM"])
+    nastav_pole(spoj, "Box", box["BoxID"], {"CleneniBoxuID": cleneni_id})
+
+
+def vyrad_box(spoj: Spojeni, box: dict[str, Any]) -> None:
+    """Vyřadí box i jeho Pozici (bez ní by zůstal nález POZICE_BEZ_BOXU) a boxy vpravo posune doleva.
+
+    Vnitřní pozice se nemění: přes v_Misto zmizí spolu s boxem a jakýkoli obsah u nich oznámí
+    kontrola integrity – NOT_EMPTY sem box s obsahem ani přiřazením nepustí.
+    """
+    nastav_pole(spoj, "Box", box["BoxID"], {"Aktivni": False})
+    _vyrad_pozici(spoj, box["PoziceID"], box["UrovenID"])

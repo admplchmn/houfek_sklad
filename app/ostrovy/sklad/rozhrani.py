@@ -1,7 +1,9 @@
 """VEŘEJNÉ ROZHRANÍ ostrova E – Sklad: pohyby a zásoby (sekce 7.5).
 
 KOLIK: jediný ostrov, který mění počty kusů. Jiný ostrov mění stav jen přes `zauctuj_korekci`.
-`stav_zasoby` je hotová (pravidlo 5.8); funkce nad DB jsou ve fázi 0 kostra.
+`stav_zasoby` je hotová (pravidlo 5.8); čtení volá repozitar.py, jakmile je spojení nad SQL Serverem.
+Bez spojení nebo mimo mssql zůstávají vzorová data z ukazky.py, aby testy kostry i ostrovů
+běžely bez databáze (stejný způsob jako ostrovy B, C a D).
 """
 from __future__ import annotations
 
@@ -11,7 +13,7 @@ from dataclasses import dataclass
 from app.platforma.db import Spojeni
 from app.platforma.typy import Kontext, PolozkaCiselniku
 
-from . import domena
+from . import domena, repozitar
 
 TYPY_KOREKCE = ("INVENTURA", "KOREKCE", "POCAT-STAV")
 
@@ -56,10 +58,12 @@ def stav_zasoby(stav_ks: int, minimum_ks: int) -> str:
     return domena.stav_zasoby(stav_ks, minimum_ks)
 
 
-# --- čtení (fáze 0: kostra se vzorovými daty) ------------------------------------------------
+# --- čtení (nad SQL Serverem repozitář, jinak vzorová data) ---------------------------------------
 
 def obsah_mist(spoj: Spojeni, vnitrni_pozice_ids: list[int]) -> dict[int, ObsahInfo]:
     """Aktuální obsah pozic; prázdná pozice ve výsledku chybí."""
+    if spoj is not None and spoj.dialekt == "mssql":
+        return repozitar.obsah_mist(spoj, vnitrni_pozice_ids)
     from . import ukazky  # KOSTRA (fáze 0)
 
     return {i: ukazky.OBSAH[i] for i in vnitrni_pozice_ids if i in ukazky.OBSAH}
@@ -67,6 +71,8 @@ def obsah_mist(spoj: Spojeni, vnitrni_pozice_ids: list[int]) -> dict[int, ObsahI
 
 def posledni_pohyby(spoj: Spojeni, vnitrni_pozice_ids: list[int]) -> dict[int, int | None]:
     """PohybID posledního pohybu na každé pozici (None = nikdy). Pro PREPOCITAT v inventuře (Q-16)."""
+    if spoj is not None and spoj.dialekt == "mssql":
+        return repozitar.posledni_pohyby(spoj, vnitrni_pozice_ids)
     from . import ukazky  # KOSTRA (fáze 0)
 
     return {i: ukazky.POSLEDNI_POHYBY.get(i) for i in vnitrni_pozice_ids}
@@ -74,6 +80,8 @@ def posledni_pohyby(spoj: Spojeni, vnitrni_pozice_ids: list[int]) -> dict[int, i
 
 def nacti_ciselniky(spoj: Spojeni) -> dict[str, tuple[PolozkaCiselniku, ...]]:
     """Číselníky skladu pro filtry: "typyPohybu" (PRIJEM, VYDEJ, PRESUN-OUT …)."""
+    if spoj is not None and spoj.dialekt == "mssql":
+        return repozitar.nacti_ciselniky(spoj)
     from . import ukazky  # KOSTRA (fáze 0)
 
     return {"typyPohybu": tuple(PolozkaCiselniku(i, kod, nazev, True) for i, kod, nazev in ukazky.TYPY_POHYBU)}
@@ -82,6 +90,8 @@ def nacti_ciselniky(spoj: Spojeni) -> dict[str, tuple[PolozkaCiselniku, ...]]:
 def stat_mista(spoj: Spojeni, *, vnitrni_pozice_ids: list[int] | None = None,
                dil_ids: list[int] | None = None) -> list[StatMistoInfo]:
     """Aktivní statická umístění podle pozic nebo dílů (nejvýše 1 na díl, Q-12). Bez filtru = všechna."""
+    if spoj is not None and spoj.dialekt == "mssql":
+        return repozitar.stat_mista(spoj, vnitrni_pozice_ids=vnitrni_pozice_ids, dil_ids=dil_ids)
     from . import ukazky  # KOSTRA (fáze 0)
 
     return [s for s in ukazky.STAT_MISTA
