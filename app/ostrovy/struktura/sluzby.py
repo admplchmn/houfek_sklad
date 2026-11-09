@@ -1,7 +1,7 @@
 """Služby ostrova C – Struktura skladu a kódy. Jedna operace = @transakce, čtení = @cteni.
 
-Fáze 0: kontrakt a čistá pravidla (domena) jsou hotové, data jsou vzorová (KOSTRA).
-Ve fázi 1 vlastník nahradí řádky `from . import ukazky` voláním repozitar.* – podpisy se nemění.
+Fáze 1: SQL je v `repozitar.py`, vzorová data (KOSTRA) nenahrazuje nic – služby čtou a mění skutečné
+tabulky. Repozitář vrací surové řádky, DTO kontraktu staví až služba (potřebuje je i pro audit).
 
 Postup každé strukturální operace s boxem ve fázi 1 (jedna transakce, sekce 5.3 a P8):
   1. rozhrani.zamkni_mista(spoj, všechny aktivní pozice dotčených boxů) – stejné zámky jako sklad,
@@ -10,16 +10,23 @@ Postup každé strukturální operace s boxem ve fázi 1 (jedna transakce, sekce
   3. zápis Pozice / Box / VnitrniPoziceBoxu; pořadí na úrovni ve dvou krocích (domena.zmeny_poradi, Δ2),
   4. přepočet FullBoxKlic dotčených boxů (Q-03) a AuditZmen s důvodem (app.platforma.audit),
   5. v testu po operaci v_KontrolaIntegrity bez nálezů pro dotčené boxy (7.3 „Hotovo, když“).
+
+Audit (kap. 25): zapisují se změny a vyřazení kmenových dat, ne jejich vznik. `Pole` je název sloupce,
+`TypObjektu` název vlastní tabulky velkým písmenem (DIL, BOX, …), důvod ze vstupu jde do `Poznamka`
+a BIT se audituje jako bool.
 """
 from __future__ import annotations
 
+from typing import Any
+
+from app.platforma.audit import zapis
 from app.platforma.chyby import AppError, chyba_vstupu
 from app.platforma.db import Spojeni, cteni
 from app.platforma.kontrakty import DuvodVstup, Seznam, Varovani
 from app.platforma.transakce import transakce
 from app.platforma.typy import Kontext, Rozmer
 
-from . import domena
+from . import domena, repozitar
 from .kontrakty import (
     VAROVANI_BEZ_ZMENY,
     BlokaceVstup,
@@ -39,6 +46,7 @@ from .kontrakty import (
     RegalyFiltr,
     RekonfiguraceVstup,
     RozmerC7Vstup,
+    SablonaPozice,
     UrovenRadek,
     UrovneFiltr,
     VnitrniPoziceDetail,
@@ -48,63 +56,58 @@ from .kontrakty import (
     ZmenaRegaluVstup,
     ZmenaUrovneVstup,
 )
-from .rozhrani import rozloz_kod
+from .rozhrani import rozloz_kod, zamkni_mista
 
-NOVE_ID = 9001            # KOSTRA: ID nově založeného objektu ve vzorových odpovědích
-NOVE_ID_POZICE = 9101
+# Pole PATCH kontraktu → sloupec vlastní tabulky (název sloupce se píše do AuditZmen.Pole).
+_SLOUPCE_PRACOVISTE = {"nazev": "NazevPracoviste"}
+_SLOUPCE_REGALU = {"nazev": "NazevRegalu"}
+_SLOUPCE_UROVNE = {"poradi": "Poradi", "delka_plochy_mm": "DelkaPlochyMM", "hloubka_plochy_mm": "HloubkaPlochyMM"}
+_SLOUPCE_C7 = {"delka_mm": "DelkaMM", "hloubka_mm": "HloubkaMM"}
 
 # --- čtení ------------------------------------------------------------------------------------
 
 
 @cteni
 def seznam_pracovist(spoj: Spojeni, filtr: PracovisteFiltr) -> Seznam[PracovisteRadek]:
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    return Seznam[PracovisteRadek](polozky=[p for p in ukazky.PRACOVISTE if _aktivita(p.aktivni, filtr.aktivni)])
+    return Seznam[PracovisteRadek](
+        polozky=[_pracoviste(r) for r in repozitar.seznam_pracovistu(spoj, filtr.aktivni)])
 
 
 @cteni
 def seznam_regalu(spoj: Spojeni, filtr: RegalyFiltr) -> Seznam[RegalRadek]:
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    return Seznam[RegalRadek](polozky=[
-        r for r in ukazky.REGALY
-        if filtr.pracoviste_id in (None, r.pracoviste_id) and _aktivita(r.aktivni, filtr.aktivni)])
+    return Seznam[RegalRadek](
+        polozky=[_regal(r) for r in repozitar.seznam_regalu(spoj, filtr.pracoviste_id, filtr.aktivni)])
 
 
 @cteni
 def seznam_urovni(spoj: Spojeni, filtr: UrovneFiltr) -> Seznam[UrovenRadek]:
     """Úrovně regálu shora dolů podle svislého pořadí."""
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    urovne = [u for u in ukazky.UROVNE if u.regal_id == filtr.regal_id and _aktivita(u.aktivni, filtr.aktivni)]
-    return Seznam[UrovenRadek](polozky=sorted(urovne, key=lambda u: -u.poradi))
+    return Seznam[UrovenRadek](
+        polozky=[_uroven(r) for r in repozitar.seznam_urovni(spoj, filtr.regal_id, filtr.aktivni)])
 
 
 @cteni
 def boxy_urovne(spoj: Spojeni, uroven_id: int) -> Seznam[BoxNaUrovni]:
     """Aktivní boxy úrovně zleva doprava (Pozice.Poradi ASC). Chyby: NOT_FOUND."""
-    _nacti_uroven(uroven_id)
-    return Seznam[BoxNaUrovni](polozky=[_na_urovni(b, b.poradi) for b in _boxy_na_urovni(uroven_id)])
+    _nacti(repozitar.uroven(spoj, uroven_id), f"Úroveň {uroven_id} neexistuje.")
+    return Seznam[BoxNaUrovni](polozky=[_na_urovni(r) for r in repozitar.boxy_urovne(spoj, uroven_id)])
 
 
 @cteni
 def detail_boxu(spoj: Spojeni, box_id: int) -> BoxDetail:
-    return _nacti_box(box_id)
+    """Box i vyřazený (po výměně T22 se musí dohledat); obsah boxu nenáleží ostrovu C."""
+    return _detail(spoj, _nacti_box(spoj, box_id))
 
 
 @cteni
 def detail_vnitrni_pozice(spoj: Spojeni, vnitrni_pozice_id: int) -> VnitrniPoziceDetail:
-    box, pozice = _nacti_pozici(vnitrni_pozice_id)
-    return _detail_pozice(box, pozice)
+    return _detail_pozice(_nacti_pozici(spoj, vnitrni_pozice_id))
 
 
 @cteni
 def seznam_cleneni(spoj: Spojeni) -> Seznam[CleneniRadek]:
     """Konfigurace C1–C7 se šablonou přihrádek (Q-06) – pro formulář boxu a náhled SVG."""
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    return Seznam[CleneniRadek](polozky=ukazky.CLENENI)
+    return Seznam[CleneniRadek](polozky=_seskup_cleneni(repozitar.polozky_cleneni(spoj)))
 
 
 # --- blokace (BLOKACE, skladový příkaz) ----------------------------------------------------------------
@@ -114,29 +117,37 @@ def seznam_cleneni(spoj: Spojeni) -> Seznam[CleneniRadek]:
 def blokuj(spoj: Spojeni, vstup: BlokaceVstup, kdo: Kontext) -> BlokaceVysledek:
     """Zablokuje nebo odblokuje celý box či jednu pozici. Stejný stav = nic se nezapíše, varování BEZ_ZMENY.
 
-    Fáze 1: zamkni_mista(pozice boxu nebo pozice) → UPDATE Blokovany → AuditZmen (Pole Blokovany, důvod).
+    Zámky jako sklad (P8), pak UPDATE Blokovany a řádek AuditZmen (Pole Blokovany, důvod v Poznámce).
     Chyby: INVALID_BARCODE, VALIDATION_ERROR (regál), NOT_FOUND.
     """
     rozlozeny = rozloz_kod(vstup.kod)
     typ = domena.cil_blokace(rozlozeny.typ)
-    box = _box_podle_kodu(rozlozeny.kod_boxu)
+    box = _nacti(repozitar.box_podle_kodu(spoj, rozlozeny.kod_boxu),
+                 f"Box {rozlozeny.kod_boxu} neexistuje nebo není aktivní.")
     if rozlozeny.kod_urovne is not None:
         domena.over_adresu(rozlozeny.kod_pracoviste or "", rozlozeny.kod_regalu or "", rozlozeny.kod_urovne,
-                           box.kod_boxu, box.full_box_klic)
+                           box["KodBoxu"], box["FullBoxKlic"])
+    pozice = repozitar.pozice_boxu(spoj, box["BoxID"])
     if typ == "BOX":
-        kod, pozice_id, puvodne = box.kod_boxu, None, box.blokovany
-        nazev = f"Box {kod}"
+        kod, objekt_id, puvodne = box["KodBoxu"], box["BoxID"], bool(box["BoxBlokovany"])
+        tabulka, typ_objektu, nazev = "Box", "BOX", f"Box {kod}"
     else:
-        pozice = next((p for p in box.pozice if p.kod_pozice == rozlozeny.kod_pozice), None)
-        if pozice is None:
+        radek = next((p for p in pozice if p["KodPozice"] == rozlozeny.kod_pozice), None)
+        if radek is None:
             raise AppError("NOT_FOUND", f"Pozice {rozlozeny.kod_mista} neexistuje nebo není aktivní.")
-        kod, pozice_id, puvodne = pozice.kod, pozice.vnitrni_pozice_id, pozice.blokovana
-        nazev = f"Pozice {kod}"
+        kod = f"{box['KodBoxu']}-{radek['KodPozice']}"
+        objekt_id, puvodne = radek["VnitrniPoziceID"], bool(radek["Blokovany"])
+        tabulka, typ_objektu, nazev = "VnitrniPoziceBoxu", "VNITRNI_POZICE_BOXU", f"Pozice {kod}"
+    zamkni_mista(spoj, [p["VnitrniPoziceID"] for p in pozice])
     varovani = ()
     if puvodne == vstup.blokovat:
         stav = "blokovaná" if vstup.blokovat else "odblokovaná"
         varovani = (Varovani(VAROVANI_BEZ_ZMENY, f"{nazev} už je {stav}, nic se nezměnilo."),)
-    return BlokaceVysledek(typ=typ, kod=kod, box_id=box.box_id, vnitrni_pozice_id=pozice_id,
+    else:
+        repozitar.nastav_pole(spoj, tabulka, objekt_id, {"Blokovany": vstup.blokovat})
+        zapis(spoj, kdo, typ_objektu, objekt_id, "Blokovany", puvodne, vstup.blokovat, vstup.duvod)
+    return BlokaceVysledek(typ=typ, kod=kod, box_id=box["BoxID"],
+                           vnitrni_pozice_id=None if typ == "BOX" else objekt_id,
                            blokovano=vstup.blokovat, zmeneno=puvodne != vstup.blokovat, varovani=varovani)
 
 
@@ -145,94 +156,89 @@ def blokuj(spoj: Spojeni, vstup: BlokaceVstup, kdo: Kontext) -> BlokaceVysledek:
 
 @transakce("PRACOVISTE_ZALOZENI")
 def zaloz_pracoviste(spoj: Spojeni, vstup: NovePracovisteVstup, kdo: Kontext) -> PracovisteRadek:
-    """Chyby: VALIDATION_ERROR (kód), ALREADY_EXISTS."""
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    kod = domena.normalizuj_kod_pracoviste(vstup.kod_pracoviste)
-    if any(p.kod_pracoviste == kod for p in ukazky.PRACOVISTE):
-        raise AppError("ALREADY_EXISTS", f"Pracoviště {kod} už existuje.")
-    return PracovisteRadek(pracoviste_id=NOVE_ID, kod_pracoviste=kod, nazev=vstup.nazev, aktivni=True)
+    """Vznik kmenového údaje se do auditu nepíše (kap. 25). Chyby: VALIDATION_ERROR, ALREADY_EXISTS."""
+    return _pracoviste(_nacti_pracoviste(spoj, repozitar.zaloz_pracoviste(spoj, vstup.kod_pracoviste,
+                                                                         vstup.nazev)))
 
 
 @transakce("PRACOVISTE_ZMENA")
 def zmen_pracoviste(spoj: Spojeni, pracoviste_id: int, vstup: ZmenaPracovisteVstup, kdo: Kontext) -> PracovisteRadek:
-    return _nacti_pracoviste(pracoviste_id).model_copy(update=vstup.zmenena_pole())
+    """Kód pracoviště je součástí barcode, mění se jen název. Chyby: NOT_FOUND, VALIDATION_ERROR."""
+    puvodni = _nacti_pracoviste(spoj, pracoviste_id)
+    _prepsat(spoj, kdo, "Pracoviste", pracoviste_id, _SLOUPCE_PRACOVISTE, puvodni, vstup.zmenena_pole(), vstup.duvod)
+    return _pracoviste(_nacti_pracoviste(spoj, pracoviste_id))
 
 
 @transakce("PRACOVISTE_DEAKTIVACE")
 def deaktivuj_pracoviste(spoj: Spojeni, pracoviste_id: int, vstup: DuvodVstup, kdo: Kontext) -> PracovisteRadek:
     """Chyby: NOT_EMPTY (pracoviště má aktivní regál), NOT_FOUND."""
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    pracoviste = _nacti_pracoviste(pracoviste_id)
-    regaly = [r.kod_regalu for r in ukazky.REGALY if r.pracoviste_id == pracoviste_id and r.aktivni]
+    radek = _nacti_pracoviste(spoj, pracoviste_id)
+    regaly = [r["KodRegalu"] for r in repozitar.seznam_regalu(spoj, pracoviste_id, True)]
     if regaly:
-        raise AppError("NOT_EMPTY", f"Pracoviště {pracoviste.kod_pracoviste} má aktivní regály "
-                                    f"{', '.join(regaly)}. Nejdřív je vyřaďte.")
-    return pracoviste.model_copy(update={"aktivni": False})
+        raise AppError("NOT_EMPTY", f"Pracoviště {radek['KodPracoviste']} má aktivní regály {', '.join(regaly)}."
+                                    " Nejdřív je vyřaďte.")
+    repozitar.nastav_pole(spoj, "Pracoviste", pracoviste_id, {"Aktivni": False})
+    zapis(spoj, kdo, "PRACOVISTE", pracoviste_id, "Aktivni", True, False, vstup.duvod)
+    return _pracoviste(_nacti_pracoviste(spoj, pracoviste_id))
 
 
 @transakce("REGAL_ZALOZENI")
 def zaloz_regal(spoj: Spojeni, vstup: NovyRegalVstup, kdo: Kontext) -> RegalRadek:
     """Chyby: VALIDATION_ERROR (kód), NOT_FOUND (pracoviště), ALREADY_EXISTS (kód na pracovišti)."""
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    kod = domena.normalizuj_kod_regalu(vstup.kod_regalu)
-    pracoviste = _nacti_pracoviste(vstup.pracoviste_id)
-    if any(r.pracoviste_id == pracoviste.pracoviste_id and r.kod_regalu == kod for r in ukazky.REGALY):
-        raise AppError("ALREADY_EXISTS", f"Regál {kod} na pracovišti {pracoviste.kod_pracoviste} už existuje.")
-    return RegalRadek(regal_id=NOVE_ID, pracoviste_id=pracoviste.pracoviste_id,
-                      kod_pracoviste=pracoviste.kod_pracoviste, kod_regalu=kod,
-                      kod=domena.kod_regalu_barcode(pracoviste.kod_pracoviste, kod), nazev=vstup.nazev, aktivni=True)
+    return _regal(_nacti_regal(spoj, repozitar.zaloz_regal(spoj, vstup.pracoviste_id, vstup.kod_regalu,
+                                                           vstup.nazev)))
 
 
 @transakce("REGAL_ZMENA")
 def zmen_regal(spoj: Spojeni, regal_id: int, vstup: ZmenaRegaluVstup, kdo: Kontext) -> RegalRadek:
-    return _nacti_regal(regal_id).model_copy(update=vstup.zmenena_pole())
+    """Kód regálu je součástí barcode, mění se jen název. Chyby: NOT_FOUND, VALIDATION_ERROR."""
+    puvodni = _nacti_regal(spoj, regal_id)
+    _prepsat(spoj, kdo, "Regal", regal_id, _SLOUPCE_REGALU, puvodni, vstup.zmenena_pole(), vstup.duvod)
+    return _regal(_nacti_regal(spoj, regal_id))
 
 
 @transakce("REGAL_DEAKTIVACE")
 def deaktivuj_regal(spoj: Spojeni, regal_id: int, vstup: DuvodVstup, kdo: Kontext) -> RegalRadek:
     """Chyby: NOT_EMPTY (regál má aktivní úroveň), NOT_FOUND."""
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    regal = _nacti_regal(regal_id)
-    urovne = [u.kod_urovne for u in ukazky.UROVNE if u.regal_id == regal_id and u.aktivni]
+    radek = _nacti_regal(spoj, regal_id)
+    urovne = [u["KodUrovne"] for u in repozitar.seznam_urovni(spoj, regal_id, True)]
     if urovne:
-        raise AppError("NOT_EMPTY", f"Regál {regal.kod} má aktivní úrovně {', '.join(urovne)}. Nejdřív je vyřaďte.")
-    return regal.model_copy(update={"aktivni": False})
+        kod = domena.kod_regalu_barcode(radek["KodPracoviste"], radek["KodRegalu"])
+        raise AppError("NOT_EMPTY", f"Regál {kod} má aktivní úrovně {', '.join(urovne)}. Nejdřív je vyřaďte.")
+    repozitar.nastav_pole(spoj, "Regal", regal_id, {"Aktivni": False})
+    zapis(spoj, kdo, "REGAL", regal_id, "Aktivni", True, False, vstup.duvod)
+    return _regal(_nacti_regal(spoj, regal_id))
 
 
 @transakce("UROVEN_ZALOZENI")
 def zaloz_uroven(spoj: Spojeni, vstup: NovaUrovenVstup, kdo: Kontext) -> UrovenRadek:
     """Chyby: VALIDATION_ERROR (kód), NOT_FOUND (regál), ALREADY_EXISTS (kód na regálu)."""
-    from . import ukazky  # KOSTRA (fáze 0)
-
     kod = domena.normalizuj_kod_urovne(vstup.kod_urovne)
-    regal = _nacti_regal(vstup.regal_id)
-    if any(u.regal_id == regal.regal_id and u.kod_urovne == kod for u in ukazky.UROVNE):
-        raise AppError("ALREADY_EXISTS", f"Úroveň {kod} na regálu {regal.kod} už existuje.")
     poradi = vstup.poradi if vstup.poradi is not None else domena.poradi_z_kodu_urovne(kod)
-    return UrovenRadek(uroven_id=NOVE_ID, regal_id=regal.regal_id, kod_urovne=kod, poradi=poradi,
-                       delka_plochy_mm=vstup.delka_plochy_mm, hloubka_plochy_mm=vstup.hloubka_plochy_mm,
-                       pocet_boxu=0, aktivni=True)
+    uroven_id = repozitar.zaloz_uroven(spoj, vstup.regal_id, kod, poradi, vstup.delka_plochy_mm,
+                                       vstup.hloubka_plochy_mm)
+    return _uroven(_nacti_uroven(spoj, uroven_id))
 
 
 @transakce("UROVEN_ZMENA")
 def zmen_uroven(spoj: Spojeni, uroven_id: int, vstup: ZmenaUrovneVstup, kdo: Kontext) -> UrovenRadek:
-    """Rozměr plochy je jen informace (17.1): změna nepřepočítává SVG ani boxy."""
-    return _nacti_uroven(uroven_id).model_copy(update=vstup.zmenena_pole())
+    """Rozměr plochy je jen informace (17.1): změna nepřepočítává SVG ani boxy. Chyby: NOT_FOUND."""
+    puvodni = _nacti_uroven(spoj, uroven_id)
+    _prepsat(spoj, kdo, "Uroven", uroven_id, _SLOUPCE_UROVNE, puvodni, vstup.zmenena_pole(), vstup.duvod)
+    return _uroven(_nacti_uroven(spoj, uroven_id))
 
 
 @transakce("UROVEN_DEAKTIVACE")
 def deaktivuj_uroven(spoj: Spojeni, uroven_id: int, vstup: DuvodVstup, kdo: Kontext) -> UrovenRadek:
     """Chyby: NOT_EMPTY (na úrovni stojí aktivní box), NOT_FOUND."""
-    uroven = _nacti_uroven(uroven_id)
-    boxy = [b.kod_boxu for b in _boxy_na_urovni(uroven_id)]
+    radek = _nacti_uroven(spoj, uroven_id)
+    boxy = [b["KodBoxu"] for b in repozitar.boxy_urovne(spoj, uroven_id)]
     if boxy:
-        raise AppError("NOT_EMPTY", f"Na úrovni {uroven.kod_urovne} stojí boxy {', '.join(boxy)}. "
+        raise AppError("NOT_EMPTY", f"Na úrovni {radek['KodUrovne']} stojí boxy {', '.join(boxy)}. "
                                     "Nejdřív je přesuňte nebo vyřaďte.")
-    return uroven.model_copy(update={"aktivni": False})
+    repozitar.nastav_pole(spoj, "Uroven", uroven_id, {"Aktivni": False})
+    zapis(spoj, kdo, "UROVEN", uroven_id, "Aktivni", True, False, vstup.duvod)
+    return _uroven(_nacti_uroven(spoj, uroven_id))
 
 
 # --- operace s boxem (BOX_EDIT) ----------------------------------------------------------------------
@@ -242,44 +248,32 @@ def deaktivuj_uroven(spoj: Spojeni, uroven_id: int, vstup: DuvodVstup, kdo: Kont
 def zaloz_box(spoj: Spojeni, uroven_id: int, vstup: NovyBoxVstup, kdo: Kontext) -> BoxDetail:
     """Pozice (pořadí na úrovni) + Box + vnitřní pozice ze šablony. Boxy od zvoleného pořadí se posunou.
 
-    Chyby: NOT_FOUND (úroveň, členění), VALIDATION_ERROR (pořadí, číslo), ALREADY_EXISTS (kód boxu),
-    BOX_SERIES_FULL.
+    Vznik boxu se neaudituje (kap. 25). Chyby: NOT_FOUND (úroveň, členění), VALIDATION_ERROR (pořadí,
+    číslo), ALREADY_EXISTS (kód boxu), BOX_SERIES_FULL.
     """
-    uroven = _nacti_uroven(uroven_id)
-    regal = _nacti_regal(uroven.regal_id)
-    kod = _novy_kod_boxu(vstup.typ_boxu, regal.kod_pracoviste, vstup.cislo_boxu)
-    cleneni = _nacti_cleneni(vstup.cleneni_id)
-    poradi = domena.vloz_do_poradi([b.box_id for b in _boxy_na_urovni(uroven_id)], NOVE_ID, vstup.poradi)
-    rozmer = Rozmer(vstup.delka_mm, vstup.hloubka_mm)
-    return BoxDetail(
-        box_id=NOVE_ID, kod_boxu=kod, typ_boxu=vstup.typ_boxu, cleneni_id=cleneni.cleneni_id,
-        kod_cleneni=cleneni.kod_cleneni, delka_mm=vstup.delka_mm, hloubka_mm=vstup.hloubka_mm,
-        full_box_klic=domena.full_box_klic(regal.kod_pracoviste, regal.kod_regalu, uroven.kod_urovne, kod),
-        blokovany=False, aktivni=True, poradi=poradi.index(NOVE_ID) + 1,
-        kod_pozice_urovne=domena.kod_pozice_urovne(poradi.index(NOVE_ID) + 1),
-        uroven_id=uroven.uroven_id, kod_urovne=uroven.kod_urovne, regal_id=regal.regal_id,
-        kod_regalu=regal.kod_regalu, pracoviste_id=regal.pracoviste_id, kod_pracoviste=regal.kod_pracoviste,
-        pozice=_nove_pozice(kod, vstup.typ_boxu, cleneni.kod_cleneni, rozmer),
-    )
+    uroven = _nacti(repozitar.uroven(spoj, uroven_id), f"Úroveň {uroven_id} neexistuje.")
+    kod_boxu = _kod_boxu(spoj, uroven["RegalID"], vstup.typ_boxu, vstup.cislo_boxu)
+    box_id = repozitar.zaloz_box(spoj, uroven_id, vstup.poradi, vstup.typ_boxu,
+                                 _kod_cleneni(spoj, vstup.cleneni_id), vstup.delka_mm, vstup.hloubka_mm, kod_boxu)
+    return _detail(spoj, _nacti_box(spoj, box_id))
 
 
 @transakce("BOX_VYMENA")
 def vymen_box(spoj: Spojeni, box_id: int, vstup: VymenaBoxuVstup, kdo: Kontext) -> BoxDetail:
     """Nový box na stejné Pozici (PoziceID i pořadí zůstávají); starý prázdný box Aktivni = 0 (Q-04).
 
+    Starý box zůstává dohledat se svým kódem (trvalá identita na štítku); do auditu jde jeho vyřazení,
+    nové číslo boxu se zakládá, tedy neaudituje (kap. 25).
     Chyby: NOT_FOUND, NOT_EMPTY (obsah nebo STAT přiřazení), ALREADY_EXISTS, BOX_SERIES_FULL.
     """
-    stary = _nacti_box(box_id)
-    kod = _novy_kod_boxu(vstup.typ_boxu, stary.kod_pracoviste, vstup.cislo_boxu)
-    cleneni = _nacti_cleneni(vstup.cleneni_id)
-    _over_prazdny(stary)
-    return stary.model_copy(update={
-        "box_id": NOVE_ID, "kod_boxu": kod, "typ_boxu": vstup.typ_boxu, "cleneni_id": cleneni.cleneni_id,
-        "kod_cleneni": cleneni.kod_cleneni, "delka_mm": vstup.delka_mm, "hloubka_mm": vstup.hloubka_mm,
-        "full_box_klic": domena.full_box_klic(stary.kod_pracoviste, stary.kod_regalu, stary.kod_urovne, kod),
-        "blokovany": False,
-        "pozice": _nove_pozice(kod, vstup.typ_boxu, cleneni.kod_cleneni, Rozmer(vstup.delka_mm, vstup.hloubka_mm)),
-    })
+    stary = _nacti_box(spoj, box_id)
+    zamkni_mista(spoj, _ids_pozic(spoj, box_id))
+    _over_prazdny(spoj, stary)
+    kod_boxu = _kod_boxu(spoj, stary["RegalID"], vstup.typ_boxu, vstup.cislo_boxu)
+    novy_id = repozitar.vymen_box(spoj, stary, vstup.typ_boxu, _kod_cleneni(spoj, vstup.cleneni_id),
+                                  vstup.delka_mm, vstup.hloubka_mm, kod_boxu)
+    zapis(spoj, kdo, "BOX", box_id, "Aktivni", True, False, vstup.duvod)
+    return _detail(spoj, _nacti_box(spoj, novy_id))
 
 
 @transakce("BOX_PRESUN")
@@ -287,204 +281,239 @@ def presun_box(spoj: Spojeni, box_id: int, vstup: PresunBoxuVstup, kdo: Kontext)
     """Box i s obsahem na jinou úroveň, bez skladového pohybu; obsah zůstává na svých pozicích.
 
     Stará Pozice se vyřadí a zbytek její úrovně se přečísluje; na cílové úrovni se boxy od zvoleného
-    pořadí posunou. FullBoxKlic se přepočítá (Q-03), barcode pozic (BPLE037-A) se nemění (Q-02).
-    Chyby: NOT_FOUND, VALIDATION_ERROR (stejná úroveň, cizí pracoviště DYN boxu – Q-30, pořadí).
+    pořadí posunou. FullBoxKlic se přepočítá (Q-03) a zapíše do auditu, barcode pozic (BPLE037-A) se
+    nemění (Q-02). Chyby: NOT_FOUND, VALIDATION_ERROR (stejná úroveň, cizí pracoviště DYN boxu – Q-30,
+    pořadí).
     """
-    box = _nacti_box(box_id)
-    cil = _nacti_uroven(vstup.cil_uroven_id)
-    regal = _nacti_regal(cil.regal_id)
-    if cil.uroven_id == box.uroven_id:
+    box = _nacti_box(spoj, box_id)
+    cil = _nacti(repozitar.uroven(spoj, vstup.cil_uroven_id), f"Úroveň {vstup.cil_uroven_id} neexistuje.")
+    if cil["UrovenID"] == box["UrovenID"]:
         raise chyba_vstupu("Box už na této úrovni stojí.",
                            {"cilUrovenId": "Pořadí na stejné úrovni se mění přes POST /boxy/{id}/poradi."})
-    domena.over_presun_boxu(box.typ_boxu, box.kod_boxu, regal.kod_pracoviste)
-    poradi = domena.vloz_do_poradi([b.box_id for b in _boxy_na_urovni(cil.uroven_id)], box.box_id, vstup.poradi)
-    nove_poradi = poradi.index(box.box_id) + 1
-    return box.model_copy(update={
-        "uroven_id": cil.uroven_id, "kod_urovne": cil.kod_urovne, "regal_id": regal.regal_id,
-        "kod_regalu": regal.kod_regalu, "poradi": nove_poradi,
-        "kod_pozice_urovne": domena.kod_pozice_urovne(nove_poradi),
-        "full_box_klic": domena.full_box_klic(regal.kod_pracoviste, regal.kod_regalu, cil.kod_urovne, box.kod_boxu),
-    })
+    domena.over_presun_boxu(box["KodTypu"], box["KodBoxu"], _nacti_regal(spoj, cil["RegalID"])["KodPracoviste"])
+    zamkni_mista(spoj, _ids_pozic(spoj, box_id))
+    repozitar.presun_box(spoj, box, vstup.cil_uroven_id, vstup.poradi)
+    novy = _nacti_box(spoj, box_id)          # FullBoxKlic přepočítal repozitář, audituje se jeho výsledek
+    zapis(spoj, kdo, "BOX", box_id, "FullBoxKlic", box["FullBoxKlic"], novy["FullBoxKlic"], vstup.duvod)
+    return _detail(spoj, novy)
 
 
 @transakce("BOX_PORADI")
 def zmen_poradi_boxu(spoj: Spojeni, box_id: int, vstup: PoradiBoxuVstup, kdo: Kontext) -> Seznam[BoxNaUrovni]:
-    """Přesune box na nové pořadí v rámci jeho úrovně; vrací celou úroveň v novém pořadí."""
-    box = _nacti_box(box_id)
-    boxy = {b.box_id: b for b in _boxy_na_urovni(box.uroven_id)}
-    poradi = domena.presun_v_poradi(list(boxy), box.box_id, vstup.nove_poradi)
-    return Seznam[BoxNaUrovni](polozky=[_na_urovni(boxy[i], n) for n, i in enumerate(poradi, start=1)])
+    """Přesune box na nové pořadí v rámci jeho úrovně; vrací celou úroveň v novém pořadí (T23).
+
+    Mění se jen sloupec Poradi tabulky Pozice (1:1 k boxu, PoziceID zůstávají), proto se audituje pod
+    boxem. Chyby: NOT_FOUND, VALIDATION_ERROR (pořadí).
+    """
+    box = _nacti_box(spoj, box_id)
+    zamkni_mista(spoj, _ids_pozic(spoj, box_id))
+    repozitar.zmen_poradi_boxu(spoj, box, vstup.nove_poradi)
+    zapis(spoj, kdo, "BOX", box_id, "Poradi", box["Poradi"], vstup.nove_poradi, vstup.duvod)
+    return Seznam[BoxNaUrovni](polozky=[_na_urovni(r) for r in repozitar.boxy_urovne(spoj, box["UrovenID"])])
 
 
 @transakce("BOX_REKONFIGURACE")
 def rekonfiguruj_box(spoj: Spojeni, box_id: int, vstup: RekonfiguraceVstup, kdo: Kontext) -> BoxDetail:
     """Staré vnitřní pozice Aktivni = 0, nové ze šablony; štítky pozic se tisknou znovu (Q-27, A-14).
 
+    Q-27 je otevřený bod: rekonfigurace se dělá jen u boxu bez zásoby a bez STAT přiřazení.
     Chyby: NOT_FOUND, VALIDATION_ERROR (stejné členění), NOT_EMPTY (obsah nebo STAT přiřazení).
     """
-    box = _nacti_box(box_id)
-    cleneni = _nacti_cleneni(vstup.cleneni_id)
-    domena.over_rekonfiguraci(box.kod_cleneni, cleneni.kod_cleneni)
-    _over_prazdny(box)
-    return box.model_copy(update={
-        "cleneni_id": cleneni.cleneni_id, "kod_cleneni": cleneni.kod_cleneni,
-        "pozice": _nove_pozice(box.kod_boxu, box.typ_boxu, cleneni.kod_cleneni, Rozmer(box.delka_mm, box.hloubka_mm)),
-    })
+    box = _nacti_box(spoj, box_id)
+    nova = _nacti_cleneni(spoj, vstup.cleneni_id)
+    domena.over_rekonfiguraci(box["KodCleneni"], nova["KodCleneni"])
+    zamkni_mista(spoj, _ids_pozic(spoj, box_id))
+    _over_prazdny(spoj, box)
+    repozitar.rekonfiguruj_box(spoj, box, nova["KodCleneni"])
+    zapis(spoj, kdo, "BOX", box_id, "CleneniBoxuID", box["CleneniBoxuID"], nova["CleneniBoxuID"], vstup.duvod)
+    return _detail(spoj, _nacti_box(spoj, box_id))
 
 
 @transakce("BOX_DEAKTIVACE")
 def deaktivuj_box(spoj: Spojeni, box_id: int, vstup: DuvodVstup, kdo: Kontext) -> BoxDetail:
     """Box i jeho Pozice Aktivni = 0, boxy vpravo se posunou doleva. Chyby: NOT_FOUND, NOT_EMPTY."""
-    box = _nacti_box(box_id)
-    _over_prazdny(box)
-    return box.model_copy(update={"aktivni": False})
+    box = _nacti_box(spoj, box_id)
+    zamkni_mista(spoj, _ids_pozic(spoj, box_id))
+    _over_prazdny(spoj, box)
+    repozitar.vyrad_box(spoj, box)
+    zapis(spoj, kdo, "BOX", box_id, "Aktivni", True, False, vstup.duvod)
+    return _detail(spoj, _nacti_box(spoj, box_id))
 
 
 @transakce("C7_ROZMER")
 def nastav_rozmer_c7(spoj: Spojeni, vnitrni_pozice_id: int, vstup: RozmerC7Vstup, kdo: Kontext
                      ) -> VnitrniPoziceDetail:
     """Nový rozměr variabilní pozice C7 (Q-01); jen u prázdné pozice. Chyby: NOT_FOUND, VALIDATION_ERROR, NOT_EMPTY."""
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    box, pozice = _nacti_pozici(vnitrni_pozice_id)
-    rozmer = domena.over_rozmer_c7(pozice.velikost, Rozmer(vstup.delka_mm, vstup.hloubka_mm),
-                                   Rozmer(box.delka_mm, box.hloubka_mm))
-    if pozice.vnitrni_pozice_id in ukazky.OBSAZENE_POZICE:
-        raise AppError("NOT_EMPTY", f"Na pozici {pozice.kod} je zásoba. Rozměr C7 se mění jen u prázdné pozice.")
-    return _detail_pozice(box, pozice.model_copy(update={"rozmer_c7_delka_mm": rozmer.delka_mm,
-                                                         "rozmer_c7_hloubka_mm": rozmer.hloubka_mm}))
+    misto = _nacti_pozici(spoj, vnitrni_pozice_id)
+    domena.over_rozmer_c7(misto["KodVelikosti"], Rozmer(vstup.delka_mm, vstup.hloubka_mm),
+                          Rozmer(misto["DelkaMM"], misto["HloubkaMM"]))
+    zamkni_mista(spoj, [vnitrni_pozice_id])
+    if repozitar.ma_obsah(spoj, vnitrni_pozice_id):
+        raise AppError("NOT_EMPTY", f"Na pozici {misto['KodBoxu']}-{misto['KodPozice']} je zásoba."
+                                    " Rozměr C7 se mění jen u prázdné pozice.")
+    puvodni = {"DelkaMM": misto["RozmerC7DelkaMM"], "HloubkaMM": misto["RozmerC7HloubkaMM"]}
+    _prepsat(spoj, kdo, "VnitrniPoziceBoxu", vnitrni_pozice_id, _SLOUPCE_C7, puvodni, vstup.zmenena_pole(),
+             vstup.duvod, typ_objektu="VNITRNI_POZICE_BOXU")
+    return _detail_pozice(_nacti_pozici(spoj, vnitrni_pozice_id))
 
 
 # --- pomocné -------------------------------------------------------------------------------------
 
 
-def _aktivita(aktivni: bool, filtr: bool | None) -> bool:
-    return filtr is None or aktivni == filtr
+def _nacti(radek: dict[str, Any] | None, zprava: str) -> dict[str, Any]:
+    """Řádek z DB; jeho absence je NOT_FOUND (ID posílá klient a to mu nedůvěřujeme)."""
+    if radek is None:
+        raise AppError("NOT_FOUND", zprava)
+    return radek
 
 
-def _nacti_pracoviste(pracoviste_id: int) -> PracovisteRadek:
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    for pracoviste in ukazky.PRACOVISTE:
-        if pracoviste.pracoviste_id == pracoviste_id:
-            return pracoviste
-    raise AppError("NOT_FOUND", f"Pracoviště {pracoviste_id} neexistuje.")
+def _nacti_pracoviste(spoj: Spojeni, pracoviste_id: int) -> dict[str, Any]:
+    return _nacti(repozitar.pracoviste(spoj, pracoviste_id), f"Pracoviště {pracoviste_id} neexistuje.")
 
 
-def _nacti_regal(regal_id: int) -> RegalRadek:
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    for regal in ukazky.REGALY:
-        if regal.regal_id == regal_id:
-            return regal
-    raise AppError("NOT_FOUND", f"Regál {regal_id} neexistuje.")
+def _nacti_regal(spoj: Spojeni, regal_id: int) -> dict[str, Any]:
+    return _nacti(repozitar.regal(spoj, regal_id), f"Regál {regal_id} neexistuje.")
 
 
-def _nacti_uroven(uroven_id: int) -> UrovenRadek:
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    for uroven in ukazky.UROVNE:
-        if uroven.uroven_id == uroven_id:
-            return uroven
-    raise AppError("NOT_FOUND", f"Úroveň {uroven_id} neexistuje.")
+def _nacti_uroven(spoj: Spojeni, uroven_id: int) -> dict[str, Any]:
+    return _nacti(repozitar.uroven(spoj, uroven_id), f"Úroveň {uroven_id} neexistuje.")
 
 
-def _nacti_cleneni(cleneni_id: int) -> CleneniRadek:
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    for cleneni in ukazky.CLENENI:
-        if cleneni.cleneni_id == cleneni_id:
-            return cleneni
-    raise AppError("NOT_FOUND", f"Členění {cleneni_id} neexistuje (povolené C1–C7).")
+def _nacti_box(spoj: Spojeni, box_id: int) -> dict[str, Any]:
+    return _nacti(repozitar.box(spoj, box_id), f"Box {box_id} neexistuje.")
 
 
-def _nacti_box(box_id: int) -> BoxDetail:
-    """Fáze 1: repozitar.nacti_box(spoj, box_id) nad Box + v_Misto."""
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    box = ukazky.BOXY.get(box_id)
-    if box is None:
-        raise AppError("NOT_FOUND", f"Box {box_id} neexistuje.")
-    return box
+def _nacti_pozici(spoj: Spojeni, vnitrni_pozice_id: int) -> dict[str, Any]:
+    """Pozice i s boxem; vyřazené místo je NOT_FOUND (na neaktivním místě se měnit nedá)."""
+    return _nacti(repozitar.vnitrni_pozice(spoj, vnitrni_pozice_id),
+                  f"Pozice {vnitrni_pozice_id} neexistuje nebo není aktivní.")
 
 
-def _box_podle_kodu(kod_boxu: str | None) -> BoxDetail:
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    box = next((b for b in ukazky.BOXY.values() if b.kod_boxu == kod_boxu and b.aktivni), None)
-    if box is None:
-        raise AppError("NOT_FOUND", f"Box {kod_boxu} neexistuje nebo není aktivní.")
-    return box
+def _nacti_cleneni(spoj: Spojeni, cleneni_id: int) -> dict[str, Any]:
+    return _nacti(repozitar.cleneni(spoj, cleneni_id), f"Členění {cleneni_id} neexistuje (povolené C1–C7).")
 
 
-def _nacti_pozici(vnitrni_pozice_id: int) -> tuple[BoxDetail, VnitrniPoziceRadek]:
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    for box in ukazky.BOXY.values():
-        for pozice in box.pozice:
-            if pozice.vnitrni_pozice_id == vnitrni_pozice_id and box.aktivni:
-                return box, pozice
-    raise AppError("NOT_FOUND", f"Pozice {vnitrni_pozice_id} neexistuje nebo není aktivní.")
+def _kod_cleneni(spoj: Spojeni, cleneni_id: int) -> str:
+    """Kód členění z ID v kontraktu – repozitář pracuje s kódy (součást kódu boxu a hlášek)."""
+    return _nacti_cleneni(spoj, cleneni_id)["KodCleneni"]
 
 
-def _boxy_na_urovni(uroven_id: int) -> list[BoxDetail]:
-    from . import ukazky  # KOSTRA (fáze 0)
+def _kod_boxu(spoj: Spojeni, regal_id: int, typ_boxu: str, cislo: int | None) -> str | None:
+    """Kód nového boxu z čísla řady (11.2.1); řada platí podle pracoviště regálu.
 
-    return sorted((b for b in ukazky.BOXY.values() if b.uroven_id == uroven_id and b.aktivni), key=lambda b: b.poradi)
-
-
-def _na_urovni(box: BoxDetail, poradi: int) -> BoxNaUrovni:
-    return BoxNaUrovni(box_id=box.box_id, kod_boxu=box.kod_boxu, typ_boxu=box.typ_boxu, kod_cleneni=box.kod_cleneni,
-                       poradi=poradi, kod_pozice_urovne=domena.kod_pozice_urovne(poradi), blokovany=box.blokovany)
-
-
-def _detail_pozice(box: BoxDetail, pozice: VnitrniPoziceRadek) -> VnitrniPoziceDetail:
-    return VnitrniPoziceDetail(
-        **pozice.model_dump(exclude={"transakce_id", "varovani"}),
-        blokovano=box.blokovany or pozice.blokovana, adresa=f"{box.full_box_klic}-{pozice.kod_pozice}",
-        box_id=box.box_id, kod_boxu=box.kod_boxu, typ_boxu=box.typ_boxu, kod_cleneni=box.kod_cleneni,
-        box_blokovany=box.blokovany, uroven_id=box.uroven_id, regal_id=box.regal_id,
-        pracoviste_id=box.pracoviste_id, kod_pracoviste=box.kod_pracoviste)
+    None = repozitář vydá další volné číslo. Chyby: NOT_FOUND (regál), VALIDATION_ERROR (číslo).
+    """
+    if cislo is None:
+        return None
+    return domena.kod_boxu(typ_boxu, _nacti_regal(spoj, regal_id)["KodPracoviste"], cislo)
 
 
-def _novy_kod_boxu(typ_boxu: str, kod_pracoviste: str, cislo: int | None) -> str:
-    """Kód nového boxu z řady (11.2.1). Chyby: ALREADY_EXISTS (číslo už bylo vydáno), BOX_SERIES_FULL."""
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    rada = domena.rada_boxu(typ_boxu, kod_pracoviste)
-    pouzita = ukazky.POUZITA_CISLA.get(rada, set())
-    if cislo is not None and cislo in pouzita:
-        raise AppError("ALREADY_EXISTS", f"Box {domena.kod_boxu(typ_boxu, kod_pracoviste, cislo)} už existuje "
-                                         "nebo existoval; kód ze štítku se znovu nepoužívá.")
-    return domena.kod_boxu(typ_boxu, kod_pracoviste, cislo if cislo is not None else domena.dalsi_cislo_boxu(pouzita))
+def _ids_pozic(spoj: Spojeni, box_id: int) -> list[int]:
+    """Aktivní vnitřní pozice boxu – vše, co se při operaci s boxem zamyká (P8)."""
+    return [p["VnitrniPoziceID"] for p in repozitar.pozice_boxu(spoj, box_id)]
 
 
-def _nove_pozice(kod_boxu: str, typ_boxu: str, kod_cleneni: str, rozmer_boxu: Rozmer) -> list[VnitrniPoziceRadek]:
-    """Vnitřní pozice ze šablony; variabilní C7 dostane výchozí rozměr = vnitřek boxu (upraví /rozmer-c7)."""
-    from . import ukazky  # KOSTRA (fáze 0)
+def _prepsat(spoj: Spojeni, kdo: Kontext, tabulka: str, objekt_id: int, sloupce: dict[str, str],
+             puvodni: dict[str, Any], zmeny: dict[str, Any], duvod: str, *,
+             typ_objektu: str | None = None) -> None:
+    """Zapíše poslaná pole a sepíše o nich řádky AuditZmen; `Pole` je název sloupce, `TypObjektu` tabulka.
 
-    return [
-        VnitrniPoziceRadek(
-            vnitrni_pozice_id=NOVE_ID_POZICE + i, kod_pozice=p.kod_pozice, kod=f"{kod_boxu}-{p.kod_pozice}",
-            velikost=p.velikost, poradi_v_boxu=p.poradi_v_boxu,
-            rozmer_c7_delka_mm=rozmer_boxu.delka_mm if p.velikost == domena.VELIKOST_C7 else None,
-            rozmer_c7_hloubka_mm=rozmer_boxu.hloubka_mm if p.velikost == domena.VELIKOST_C7 else None,
-            blokovana=False)
-        for i, p in enumerate(domena.pozice_ze_sablony(typ_boxu, ukazky.PRIHRADKY[kod_cleneni]))
-    ]
+    Stejná hodnota se nezapíše ani nezaaudituje (opakování stejného PATCH nesmí zaplavit audit).
+    """
+    nove = {}
+    for pole, hodnota in zmeny.items():
+        sloupec = sloupce[pole]
+        if puvodni[sloupec] != hodnota:
+            zapis(spoj, kdo, typ_objektu or tabulka.upper(), objekt_id, sloupec, puvodni[sloupec], hodnota, duvod)
+            nove[sloupec] = hodnota
+    if nove:
+        repozitar.nastav_pole(spoj, tabulka, objekt_id, nove)
 
 
-def _over_prazdny(box: BoxDetail) -> None:
+def _over_prazdny(spoj: Spojeni, box: dict[str, Any]) -> None:
     """Strukturální změna jen u boxu bez zásoby a bez statického přiřazení (analýza 9.7, Q-27).
 
-    Fáze 1: v_ObsahPozice a v_StatickeMisto ostrova E po zamkni_mista. Chyby: NOT_EMPTY.
+    Obsah i přiřazení se čtou z pohledů ostrova E (P2) a až po zamkni_mista, aby mezi kontrolou
+    a zápisem nikdo nenaskladnil. Chyby: NOT_EMPTY.
     """
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    obsazene = [p.kod for p in box.pozice if p.vnitrni_pozice_id in ukazky.OBSAZENE_POZICE]
-    prirazene = [p.kod for p in box.pozice if p.vnitrni_pozice_id in ukazky.STAT_PRIRAZENE_POZICE]
+    obsazene = repozitar.kody_pozic(spoj, box["BoxID"], "dbo.v_ObsahPozice")
+    prirazene = repozitar.kody_pozic(spoj, box["BoxID"], "dbo.v_StatickeMisto")
     if obsazene or prirazene:
         duvody = ([f"zásoba na {', '.join(obsazene)}"] if obsazene else []) \
             + ([f"statické přiřazení na {', '.join(prirazene)}"] if prirazene else [])
-        raise AppError("NOT_EMPTY", f"Box {box.kod_boxu} není volný: {'; '.join(duvody)}. "
+        raise AppError("NOT_EMPTY", f"Box {box['KodBoxu']} není volný: {'; '.join(duvody)}. "
                                     "Nejdřív zásobu vyskladněte a přiřazení ukončete.")
+
+
+def _pracoviste(radek: dict[str, Any]) -> PracovisteRadek:
+    return PracovisteRadek(pracoviste_id=radek["PracovisteID"], kod_pracoviste=radek["KodPracoviste"],
+                           nazev=radek["NazevPracoviste"], aktivni=bool(radek["Aktivni"]))
+
+
+def _regal(radek: dict[str, Any]) -> RegalRadek:
+    return RegalRadek(
+        regal_id=radek["RegalID"], pracoviste_id=radek["PracovisteID"], kod_pracoviste=radek["KodPracoviste"],
+        kod_regalu=radek["KodRegalu"], kod=domena.kod_regalu_barcode(radek["KodPracoviste"], radek["KodRegalu"]),
+        nazev=radek["NazevRegalu"], aktivni=bool(radek["Aktivni"]))
+
+
+def _uroven(radek: dict[str, Any]) -> UrovenRadek:
+    return UrovenRadek(
+        uroven_id=radek["UrovenID"], regal_id=radek["RegalID"], kod_urovne=radek["KodUrovne"],
+        poradi=radek["Poradi"], delka_plochy_mm=radek["DelkaPlochyMM"], hloubka_plochy_mm=radek["HloubkaPlochyMM"],
+        pocet_boxu=radek["PocetBoxu"], aktivni=bool(radek["Aktivni"]))
+
+
+def _na_urovni(radek: dict[str, Any]) -> BoxNaUrovni:
+    return BoxNaUrovni(box_id=radek["BoxID"], kod_boxu=radek["KodBoxu"], typ_boxu=radek["KodTypu"],
+                       kod_cleneni=radek["KodCleneni"], poradi=radek["Poradi"],
+                       kod_pozice_urovne=domena.kod_pozice_urovne(radek["Poradi"]),
+                       blokovany=bool(radek["BoxBlokovany"]))
+
+
+def _pozice(radek: dict[str, Any], kod_boxu: str) -> VnitrniPoziceRadek:
+    return VnitrniPoziceRadek(
+        vnitrni_pozice_id=radek["VnitrniPoziceID"], kod_pozice=radek["KodPozice"],
+        kod=f"{kod_boxu}-{radek['KodPozice']}", velikost=radek["KodVelikosti"],
+        poradi_v_boxu=radek["PoradiVBoxu"], rozmer_c7_delka_mm=radek["RozmerC7DelkaMM"],
+        rozmer_c7_hloubka_mm=radek["RozmerC7HloubkaMM"], blokovana=bool(radek["Blokovany"]))
+
+
+def _detail(spoj: Spojeni, radek: dict[str, Any]) -> BoxDetail:
+    """Box + jeho aktivní vnitřní pozice (vyřazený box je dohledat, ale místa už nemá)."""
+    return BoxDetail(
+        box_id=radek["BoxID"], kod_boxu=radek["KodBoxu"], typ_boxu=radek["KodTypu"],
+        cleneni_id=radek["CleneniBoxuID"], kod_cleneni=radek["KodCleneni"], delka_mm=radek["DelkaMM"],
+        hloubka_mm=radek["HloubkaMM"], full_box_klic=radek["FullBoxKlic"], blokovany=bool(radek["BoxBlokovany"]),
+        aktivni=bool(radek["Aktivni"]), poradi=radek["Poradi"],
+        kod_pozice_urovne=domena.kod_pozice_urovne(radek["Poradi"]), uroven_id=radek["UrovenID"],
+        kod_urovne=radek["KodUrovne"], regal_id=radek["RegalID"], kod_regalu=radek["KodRegalu"],
+        pracoviste_id=radek["PracovisteID"], kod_pracoviste=radek["KodPracoviste"],
+        pozice=[_pozice(p, radek["KodBoxu"]) for p in repozitar.pozice_boxu(spoj, radek["BoxID"])])
+
+
+def _detail_pozice(radek: dict[str, Any]) -> VnitrniPoziceDetail:
+    return VnitrniPoziceDetail(
+        vnitrni_pozice_id=radek["VnitrniPoziceID"], kod_pozice=radek["KodPozice"],
+        kod=f"{radek['KodBoxu']}-{radek['KodPozice']}", velikost=radek["KodVelikosti"],
+        poradi_v_boxu=radek["PoradiVBoxu"], rozmer_c7_delka_mm=radek["RozmerC7DelkaMM"],
+        rozmer_c7_hloubka_mm=radek["RozmerC7HloubkaMM"], blokovana=bool(radek["Blokovany"]),
+        blokovano=bool(radek["BoxBlokovany"]) or bool(radek["Blokovany"]),
+        adresa=f"{radek['FullBoxKlic']}-{radek['KodPozice']}", box_id=radek["BoxID"],
+        kod_boxu=radek["KodBoxu"], typ_boxu=radek["KodTypu"], kod_cleneni=radek["KodCleneni"],
+        box_blokovany=bool(radek["BoxBlokovany"]), uroven_id=radek["UrovenID"], regal_id=radek["RegalID"],
+        pracoviste_id=radek["PracovisteID"], kod_pracoviste=radek["KodPracoviste"])
+
+
+def _seskup_cleneni(radky: list[dict[str, Any]]) -> list[CleneniRadek]:
+    """Řádky členění i s přihrádkami šablony (Q-06) seskupené do jednoho řádku za členění."""
+    prihradky: dict[int, list[SablonaPozice]] = {}
+    for r in radky:
+        prihradky.setdefault(r["CleneniBoxuID"], []).append(SablonaPozice(
+            dyn_kod=r["DynKod"], stat_kod=r["StatKod"], poradi=r["Poradi"], rada=r["Rada"],
+            sloupec=r["Sloupec"], velikost=r["KodVelikosti"], rel_x=float(r["RelX"]), rel_y=float(r["RelY"]),
+            rel_sirka=float(r["RelSirka"]), rel_hloubka=float(r["RelHloubka"])))
+    hlavicky = {r["CleneniBoxuID"]: r for r in radky}
+    return [CleneniRadek(cleneni_id=id_cleneni, kod_cleneni=hlavicky[id_cleneni]["KodCleneni"],
+                         pocet_pozic=hlavicky[id_cleneni]["PocetPozic"], pozice=prihradky[id_cleneni])
+            for id_cleneni in prihradky]
