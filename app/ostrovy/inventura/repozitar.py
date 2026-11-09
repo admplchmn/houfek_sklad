@@ -103,7 +103,7 @@ def zaloz(spoj: Spojeni, *, typ_rozsahu: str, cil_id: int | None, slepa: bool, u
            for sloupec in _CIL_ROZSAHU.values()}
     return spoj.vloz("INSERT INTO dbo.Inventura (TypRozsahu, StavInventury, PracovisteID, RegalID, UrovenID,"
                      " BoxID, VnitrniPoziceID, SlepaInventura, ZalozilUzivatelID, Poznamka)"
-                     " VALUES (?, 'ROZPRACOVANA', ?, ?, ?, ?, ?, ?, ?)", typ_rozsahu, cil["PracovisteID"],
+                     " VALUES (?, 'ROZPRACOVANA', ?, ?, ?, ?, ?, ?, ?, ?)", typ_rozsahu, cil["PracovisteID"],
                      cil["RegalID"], cil["UrovenID"], cil["BoxID"], cil["VnitrniPoziceID"], slepa, uzivatel_id,
                      poznamka)
 
