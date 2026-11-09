@@ -5,6 +5,7 @@ Data z SQL Serveru (přihlášení, správa uživatelů, rolí a terminálů) te
 """
 import importlib.util
 import unittest
+from datetime import datetime, timedelta
 
 from app.ostrovy import identita
 from app.ostrovy.identita import domena
@@ -58,6 +59,51 @@ class TestPravidla(unittest.TestCase):
         self.assertFalse(domena.pin_sedi("1234", "neplatny-hash"))
 
 
+class TestZamekPinu(unittest.TestCase):
+    """Pravidlo zámku po chybných PINech (TD-07, D-33): každý případ zvlášť, bez databáze."""
+
+    TED = datetime(2026, 11, 9, 10, 0)
+    ZAMCENO = TED + timedelta(minutes=15)     # zámek, který právě nastal
+
+    def pokus(self, **pole: object) -> tuple:
+        """Účet bez předchozích pokusů a bez zámku, podle toho, co test řekne."""
+        parametry: dict[str, object] = dict(existuje=True, aktivni=True, zamceno_do=None, pin_plati=True,
+                                            chybne_pokusy=0, ted=self.TED)
+        parametry.update(pole)
+        return domena.vyhodnot_pokus(**parametry)
+
+    def test_nezname_osobni_cislo(self):
+        self.assertEqual(self.pokus(existuje=False, pin_plati=False), ("NEZNAMY", 0, None))
+
+    def test_vyrazeny_uzivatel_se_nezamyka(self):
+        """Vyřazený účet se nepřihlásí nikdy, takže počítadlo ani zámek nemá co řešit."""
+        self.assertEqual(self.pokus(aktivni=False, pin_plati=False, chybne_pokusy=4), ("NEAKTIVNI", 4, None))
+
+    def test_zamceny_ucet_se_neprihlasi_a_zamek_se_neprodlouzi(self):
+        """Správný PIN během zámku nepustí a další pokusy zámek neposouvají."""
+        for poradi in range(3):
+            self.assertEqual(self.pokus(zamceno_do=self.ZAMCENO, pin_plati=poradi % 2 == 0),
+                             ("ZAMCENO", 0, self.ZAMCENO))
+
+    def test_uplynuty_zamek_jiz_neplati(self):
+        """Ve chvíli, kdy `zamceno_do` nastal, se zkouší dál; pátá chyba zamkne znovu."""
+        self.assertEqual(self.pokus(zamceno_do=self.TED), ("USPECH", 0, None))
+        self.assertEqual(self.pokus(zamceno_do=self.TED, pin_plati=False, chybne_pokusy=4),
+                         ("CHYBNY_PIN", 0, self.ZAMCENO))
+
+    def test_chybne_piny_se_pocitaji(self):
+        for poradi in range(1, domena.LIMIT_CHYBNYCH_POKUSU):
+            self.assertEqual(self.pokus(pin_plati=False, chybne_pokusy=poradi - 1),
+                             ("CHYBNY_PIN", poradi, None))
+
+    def test_patym_chybnym_pinu_se_ucet_zamkne(self):
+        """Pátá chyba účet zamkne a počítadlo nechá na nule – řádek pokusu je pořád CHYBNY_PIN."""
+        self.assertEqual(self.pokus(pin_plati=False, chybne_pokusy=4), ("CHYBNY_PIN", 0, self.ZAMCENO))
+
+    def test_uspesne_prihlaseni_vynuluje_pocitadlo_i_zamek(self):
+        self.assertEqual(self.pokus(chybne_pokusy=3), ("USPECH", 0, None))
+
+
 class TestChybyBezDatabaze(ZakladTestuOstrova):
     """Chyby, které ostrov pozná dřív, než sáhne do tabulek: formát vstupu a oprávnění."""
 
@@ -72,6 +118,8 @@ class TestChybyBezDatabaze(ZakladTestuOstrova):
         self.prihlas("DIL_CIST", uzivatel_id=1)
         for cesta in ("/api/identita/uzivatele", "/api/identita/role", "/api/identita/terminaly"):
             self.over_chybu(self.klient.get(cesta), 403, "NO_PERMISSION")
+        self.over_chybu(self.klient.post("/api/identita/uzivatele/1/odemknout", json={"duvod": "zkusebni"}),
+                        403, "NO_PERMISSION")
 
     def test_spatny_vstup_se_odmi_drive_nez_z_dotazu(self):
         self.prihlas("UZIVATEL_EDIT", uzivatel_id=2)

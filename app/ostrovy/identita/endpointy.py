@@ -5,6 +5,7 @@ Cesty pod /api/identita:
     GET /ja                                                                  (přihlášený)
     GET|POST /uzivatele, PATCH /uzivatele/{id},
     POST /uzivatele/{id}/deaktivovat, POST /uzivatele/{id}/reset-pinu        (UZIVATEL_EDIT)
+    POST /uzivatele/{id}/odemknout                                           (UZIVATEL_EDIT)
     GET /role, PATCH /role/{id}                                              (UZIVATEL_EDIT)
     GET|POST /terminaly, PATCH /terminaly/{id}                               (UZIVATEL_EDIT)
 Session plní a maže jen tento ostrov (app.platforma.auth.prihlas / odhlas, docs/adr/0007).
@@ -12,6 +13,7 @@ Session plní a maže jen tento ostrov (app.platforma.auth.prihlas / odhlas, doc
 from flask import Blueprint
 
 from app.platforma.auth import kontext, odhlas, prihlas, verejne, vyzaduje
+from app.platforma.chyby import AppError
 from app.platforma.http import dokumentuj, nacti_parametry, nacti_vstup, odpoved
 from app.platforma.kontrakty import DuvodVstup, Seznam, Strana
 from app.platforma.typy import Kontext
@@ -43,6 +45,9 @@ api = Blueprint("identita_api", __name__)
             popis="Přihlášení osobním číslem a PINem; PDA posílá i kód terminálu. Chyba je vždy stejná.")
 def prihlaseni():
     uzivatel = sluzby.over_prihlaseni(nacti_vstup(PrihlaseniVstup))
+    if uzivatel is None:
+        # až tady, po potvrzení transakce: počítadlo, zámek i řádek pokusu zůstanou (D-33, S-17)
+        raise AppError("NOT_AUTHENTICATED", sluzby.ZPRAVA_NEPLATNE)
     prihlas(Kontext(uzivatel.uzivatel_id, uzivatel.terminal_id, uzivatel.kod_role, frozenset(uzivatel.opravneni)))
     return odpoved(uzivatel, f"Přihlášen {uzivatel.cele_jmeno}.")
 
@@ -101,6 +106,15 @@ def deaktivuj_uzivatele(uzivatel_id: int):
 def reset_pinu(uzivatel_id: int):
     return odpoved(sluzby.nastav_pin(uzivatel_id=uzivatel_id, vstup=nacti_vstup(ResetPinuVstup), kdo=kontext()),
                    "PIN nastaven.")
+
+
+@api.post("/uzivatele/<int:uzivatel_id>/odemknout")
+@vyzaduje("UZIVATEL_EDIT")
+@dokumentuj(vstup=DuvodVstup, vystup=UzivatelRadek,
+            popis="Uvolní účet zamčený po chybných PINech a vynuluje počítadlo (D-33).")
+def odemknout_uzivatele(uzivatel_id: int):
+    return odpoved(sluzby.odemknout_uzivatele(uzivatel_id=uzivatel_id, vstup=nacti_vstup(DuvodVstup),
+                                              kdo=kontext()), "Uživatel odemčen.")
 
 
 # --- role a terminály (UZIVATEL_EDIT) -------------------------------------------------------------

@@ -5,13 +5,16 @@ kontrola seznamu oprávnění a pojistky správy (ADMIN si nesmí odebrat správ
 nevyřadí sám sebe). Hash PINu je argon2 podle docs/adr/0007 – knihovna argon2-cffi je
 v requirements.txt a načítá se až při použití.
 
-Fáze 1 (TD-07): zámek po opakovaných chybných pokusech – úložiště pokusů rozhodne bezpečnost HOUFEK.
+Zámek po chybných PINech (TD-07, rozhodnutí D-33) je pravidlo `vyhodnot_pokus`: pět chyb po sobě
+zamkne účet na 15 minut a úspěch počítadlo vynuluje. Rozhoduje jen z hodnot, které mu služba
+přečte v databázi – proto se pravidlo dá otestovat i bez SQL Serveru.
 """
 from __future__ import annotations
 
 import functools
 import re
 from collections.abc import Iterable
+from datetime import datetime, timedelta
 
 from app.platforma.chyby import chyba_vstupu
 
@@ -79,6 +82,42 @@ def over_posledniho_spravce(pocet_activnich: int) -> None:
     if pocet_activnich <= 1:
         raise chyba_vstupu("Nemůžete vyřadit posledního aktivního správce. Předejte nejprve správu "
                            "jinému uživateli.")
+
+
+# --- zámek po chybných PINech (TD-07, rozhodnutí D-33) --------------------------------------------
+
+POKUS_USPECH = "USPECH"
+POKUS_CHYBNY_PIN = "CHYBNY_PIN"
+POKUS_ZAMCENO = "ZAMCENO"   # zámek už trval, nastal v některém z předchozích pokusů
+POKUS_NEZNAMY = "NEZNAMY"
+POKUS_NEAKTIVNI = "NEAKTIVNI"
+
+LIMIT_CHYBNYCH_POKUSU = 5
+DOBA_ZAMKU = timedelta(minutes=15)
+
+
+def vyhodnot_pokus(*, existuje: bool, aktivni: bool, zamceno_do: datetime | None, pin_plati: bool,
+                   chybne_pokusy: int, ted: datetime) -> tuple[str, int, datetime | None]:
+    """Rozhodne pokus o přihlášení (D-33) a vrátí (výsledek, ChybnePokusy, ZamcenoDo).
+
+    `výsledek` je kód pro řádek `PrihlaseniPokus` – osobní číslo se v něm ukládá vždy, PIN nikdy.
+    Pořadí rozhoduje D-33: neznámé číslo, vyřazený uživatel, zámek, PIN. Správný PIN během zámku
+    nepustí a další pokusy zámek neprodlužují; až `zamceno_do` uplynutím přestane platit, počítá
+    se znovu. Pátá chyba po sobě účet zamkne a počítadlo vynuluje, proto je její řádek
+    CHYBNY_PIN (zámek nastal) a až další pokus je ZAMCENO (zámek už trval). Nový stav se píše
+    jen pro existující účet; u neznámého čísla nemá co vyjádřit.
+    """
+    if not existuje:
+        return POKUS_NEZNAMY, 0, None
+    if not aktivni:
+        return POKUS_NEAKTIVNI, chybne_pokusy, zamceno_do
+    if zamceno_do is not None and zamceno_do > ted:
+        return POKUS_ZAMCENO, chybne_pokusy, zamceno_do
+    if not pin_plati:
+        if chybne_pokusy + 1 >= LIMIT_CHYBNYCH_POKUSU:
+            return POKUS_CHYBNY_PIN, 0, ted + DOBA_ZAMKU
+        return POKUS_CHYBNY_PIN, chybne_pokusy + 1, zamceno_do
+    return POKUS_USPECH, 0, None
 
 
 # --- hash PINu (argon2, docs/adr/0007) ------------------------------------------------------------

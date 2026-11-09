@@ -14,6 +14,9 @@ from __future__ import annotations
 
 import itertools
 import uuid
+from contextlib import contextmanager
+from datetime import datetime, timedelta
+from unittest.mock import patch
 
 from app.ostrovy import OSTROVY
 from app.ostrovy.identita import domena, rozhrani, sluzby
@@ -59,12 +62,24 @@ class ZakladIdentit(ZakladIntegrace):
             ZakladIdentit.aplikace_http = vytvor_aplikaci(OSTROVY, KONFIGURACE)
         self.klient = ZakladIdentit.aplikace_http.test_client()
         self.cisla: dict[int, str] = {}
+        self.puvodni_opravneni: dict[str, list[str]] = {}
         self.role = {radek["KodRole"]: int(radek["RoleID"]) for radek in
                      self.spoj.dotaz("SELECT RoleID, KodRole FROM dbo.Role")}
         self.pracoviste = int(self.spoj.hodnota("SELECT MIN(PracovisteID) FROM dbo.Pracoviste"))
         # prvního správce vkládáme SQL příkazem: audit i @transakce potřebují existující UzivatelID
         self.spravce = self._vloz("ADMIN", "Integracni", "Spravce")
         self.kdo = Kontext(self.spravce, None, "ADMIN", frozenset({"UZIVATEL_EDIT"}))
+
+    def tearDown(self) -> None:
+        """Role se vrátí do stavu, v jakém ji test našel (dělá to `_opravneni_role`).
+
+        Až po rollbacku testu: ten může držet zámky nad `RoleOpravneni` a zápis z druhého spojení
+        by na nich visel do konce testu. app context ještě žije, proto `spojeni_pro_skript` funguje.
+        """
+        self.spoj._rollback()
+        for kod_role, kodu in self.puvodni_opravneni.items():
+            self._opravneni_role(kod_role, *kodu)
+        super().tearDown()
 
     # --- pomocná data ------------------------------------------------------------------------
 
@@ -95,7 +110,18 @@ class ZakladIdentit(ZakladIntegrace):
         return terminal_id, kod
 
     def _opravneni_role(self, kod_role: str, *kodu: str) -> None:
-        """Role v databázi žádná oprávnění nemají (brána G4) – test si je přiřadí sám."""
+        """Role dostane jen kódy, které test potřebuje; po testu se vrátí to, co v ní bylo předtím.
+
+        Matice G4 je v databázi od migrace 005 – role tedy žádná prázdná nejsou. Zápis se potvrzuje
+        do databáze, kterou sdílejí všechny ostrovy, proto si helper pamatuje původní stav od prvního
+        zásahu do role a `tearDown` ho vrátí zpátky; jinak by další test našel roli připravenou pro
+        ten předchozí. Při druhém volání v témže testu se původní stav už nepřepisuje.
+        """
+        if kod_role not in self.puvodni_opravneni:
+            self.puvodni_opravneni[kod_role] = [radek["KodOpravneni"] for radek in self.spoj.dotaz(
+                "SELECT o.KodOpravneni FROM dbo.RoleOpravneni AS ro"
+                " JOIN dbo.Opravneni AS o ON o.OpravneniID = ro.OpravneniID WHERE ro.RoleID = ?",
+                self.role[kod_role])]
         with spojeni_pro_skript() as spoj:
             spoj.proved("DELETE FROM dbo.RoleOpravneni WHERE RoleID = ?", self.role[kod_role])
             for kod in kodu:
@@ -214,6 +240,163 @@ class TestPrihlaseni(ZakladIdentit):
         self.ok(self.prihlaseni(self.cisla[self.uzivatel], "1234"))
         self.ok(self.klient.post("/api/identita/odhlaseni"))
         self.chybnou(self.klient.get("/api/identita/ja"), 401, "NOT_AUTHENTICATED")
+
+
+class TestZamekPinu(ZakladIdentit):
+    """Zámek po pěti chybných PINech (TD-07, D-33): počítadlo, zámek, historie pokusů, odemknutí.
+
+    Přihlášení i odemknutí běží přes HTTP, takže se potvrzují vlastní transakcí – přesně to, čím se
+    liší od ostatních testů: počítadlo, zámek i řádek pokusu musí v databázi zůstat i po chybném
+    přihlášení. `teď()` služba se mění na pevný čas, aby test na patnáct minut nečekal.
+    """
+
+    TED = datetime(2026, 11, 9, 10, 0)
+    ZA_15 = TED + timedelta(minutes=15)      # zámek, který právě nastal
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._opravneni_role("SKL", "DIL_CIST")
+        self._opravneni_role("ADMIN", "UZIVATEL_EDIT")
+        self.uzivatel = self._vloz("SKL", "Jan", "Novak", pin=PIN)
+        self.cislo = self.cisla[self.uzivatel]
+
+    # --- jak si test připraví čas a na co se dívá ------------------------------------------------
+
+    @contextmanager
+    def ted(self, hodinu: datetime):
+        """Služba vidí `teď()` jako `hodinu` – patnáct minut se počká slovy, ne během testu."""
+        with patch("app.ostrovy.identita.sluzby.teď", return_value=hodinu):
+            yield
+
+    def zamkni(self) -> None:
+        """Pět chybných PINů po sobě: účet je zamčený a počítadlo už od páté chyby zase od nuly."""
+        for _ in range(domena.LIMIT_CHYBNYCH_POKUSU):
+            self.chybnou(self.prihlaseni(self.cislo, "9999"), 401, "NOT_AUTHENTICATED")
+        self.assertEqual(self.stav(self.uzivatel), (0, self.ZA_15))
+
+    def prihlas_admina(self) -> None:
+        """Session se správcem: endpoint odemknutí vyžaduje UZIVATEL_EDIT."""
+        spravce = self._vloz("ADMIN", "Druhy", "Spravce", pin=PIN)
+        self.ok(self.prihlaseni(self.cisla[spravce], PIN))
+
+    def stav(self, uzivatel_id: int) -> tuple[int, datetime | None]:
+        """Počítadlo a zámek v databázi – přihlášení je píše vlastním spojením a potvrzuje je."""
+        radek = self.spoj.jeden("SELECT ChybnePokusy, ZamcenoDo FROM dbo.Uzivatel WHERE UzivatelID = ?",
+                                uzivatel_id)
+        return int(radek["ChybnePokusy"]), radek["ZamcenoDo"]
+
+    def pokusy(self, osobni_cislo: str) -> list[str]:
+        """Výsledky pokusů o přihlášení v pořadí, v jakém k sobě přišly."""
+        return [radek["Vysledek"] for radek in self.spoj.dotaz(
+            "SELECT Vysledek FROM dbo.PrihlaseniPokus WHERE OsobniCislo = ? ORDER BY PokusID", osobni_cislo)]
+
+    # --- pravidlo (D-33) -------------------------------------------------------------------------
+
+    def test_pet_chybnych_pinu_ucet_zamkne(self):
+        with self.ted(self.TED):
+            for poradi in range(1, domena.LIMIT_CHYBNYCH_POKUSU):
+                self.chybnou(self.prihlaseni(self.cislo, "9999"), 401, "NOT_AUTHENTICATED")
+                self.assertEqual(self.stav(self.uzivatel), (poradi, None))
+            self.chybnou(self.prihlaseni(self.cislo, "9999"), 401, "NOT_AUTHENTICATED")
+            self.assertEqual(self.stav(self.uzivatel), (0, self.ZA_15))
+            self.assertEqual(self.pokusy(self.cislo), ["CHYBNY_PIN"] * domena.LIMIT_CHYBNYCH_POKUSU)
+
+    def test_behem_zamku_se_neprihlasi_a_zamek_zusta(self):
+        """Správný PIN během zámku nepustí a žádný pokus zámek neposouvá – počká se patnáct minut."""
+        with self.ted(self.TED):
+            self.zamkni()
+            for _ in range(2):
+                self.chybnou(self.prihlaseni(self.cislo, PIN), 401, "NOT_AUTHENTICATED")
+                self.chybnou(self.prihlaseni(self.cislo, "9999"), 401, "NOT_AUTHENTICATED")
+            self.assertEqual(self.stav(self.uzivatel), (0, self.ZA_15))
+            self.assertEqual(self.pokusy(self.cislo),
+                             ["CHYBNY_PIN"] * domena.LIMIT_CHYBNYCH_POKUSU + ["ZAMCENO"] * 4)
+
+    def test_po_uplynuti_zamku_se_prihlasi(self):
+        with self.ted(self.TED):
+            self.zamkni()
+        with self.ted(self.ZA_15):        # chvíle, kdy už zámek plynul
+            self.ok(self.prihlaseni(self.cislo, PIN))
+        self.assertEqual(self.stav(self.uzivatel), (0, None))
+        self.assertEqual(self.pokusy(self.cislo), ["CHYBNY_PIN"] * domena.LIMIT_CHYBNYCH_POKUSU + ["USPECH"])
+
+    def test_uspesne_prihlaseni_vynuluje_pocitadlo(self):
+        """Tři chyby a správný PIN: účet se nezamkne a počítadlo se rozbíhá znovu od nuly."""
+        with self.ted(self.TED):
+            for _ in range(3):
+                self.chybnou(self.prihlaseni(self.cislo, "9999"), 401, "NOT_AUTHENTICATED")
+            self.assertEqual(self.stav(self.uzivatel), (3, None))
+            self.ok(self.prihlaseni(self.cislo, PIN))
+            self.assertEqual(self.stav(self.uzivatel), (0, None))
+            self.chybnou(self.prihlaseni(self.cislo, "9999"), 401, "NOT_AUTHENTICATED")
+            self.assertEqual(self.stav(self.uzivatel), (1, None))
+        self.assertEqual(self.pokusy(self.cislo), ["CHYBNY_PIN"] * 3 + ["USPECH", "CHYBNY_PIN"])
+
+    def test_nezname_cislo_a_vyrazeny_uzivatel_pisou_vysledek(self):
+        """Stejná chyba jako u pokusu s PINem; v historii se liší výsledek a chybějící uživatel."""
+        neaktivni = self._vloz("SKL", "Karel", "Dvorak", pin=PIN, aktivni=False)
+        nezname = self._cislo()
+        zpravy = set()
+        for cislo in (nezname, self.cisla[neaktivni]):
+            obalka = self.chybnou(self.prihlaseni(cislo, "9999"), 401, "NOT_AUTHENTICATED")
+            self.assertIsNone(obalka["data"])
+            zpravy.add(obalka["message"])
+        self.assertEqual(zpravy, {sluzby.ZPRAVA_NEPLATNE})
+        self.assertEqual(self.pokusy(nezname), ["NEZNAMY"])
+        self.assertEqual(self.pokusy(self.cisla[neaktivni]), ["NEAKTIVNI"])
+        self.assertEqual(self.spoj.jeden("SELECT UzivatelID, TerminalID FROM dbo.PrihlaseniPokus"
+                                         " WHERE OsobniCislo = ?", nezname),
+                         {"UzivatelID": None, "TerminalID": None})
+        self.assertEqual(self.stav(neaktivni), (0, None))     # vyřazený účet se nepočítá ani nezamyká
+
+    def test_pokus_se_pise_bez_pinu(self):
+        """Řádek pokusu má jen to, co smí mít: čas, číslo, uživatele, terminál a výsledek (D-33)."""
+        terminal, kod = self._vloz_terminal("31", pracoviste=self.pracoviste)
+        with self.ted(self.TED):
+            self.chybnou(self.prihlaseni(self.cislo, "9999", kod), 401, "NOT_AUTHENTICATED")
+            self.ok(self.prihlaseni(self.cislo, PIN, kod))
+        radky = self.spoj.dotaz("SELECT * FROM dbo.PrihlaseniPokus WHERE OsobniCislo = ? ORDER BY PokusID",
+                                self.cislo)
+        self.assertEqual([radek["Vysledek"] for radek in radky], ["CHYBNY_PIN", "USPECH"])
+        self.assertEqual({(radek["UzivatelID"], radek["TerminalID"]) for radek in radky},
+                         {(self.uzivatel, terminal)})
+        self.assertEqual(set(radky[0]),
+                         {"PokusID", "DatumCas", "OsobniCislo", "UzivatelID", "TerminalID", "Vysledek"})
+        self.assertNotIn("argon2", str(radky))     # otevřený PIN ani hash se nikde nedočítají
+
+    # --- odemknutí správcem ------------------------------------------------------------------------
+
+    def test_odemknout_vynuluje_pocitadlo_i_zamek(self):
+        """ADMIN uvolní účet dřív, než uplyne 15 minut; výstup je `UzivatelRadek` jako u deaktivace."""
+        with spojeni_pro_skript() as spoj:      # stav, který si přihlášení připraví až po páté chybě
+            spoj.proved("UPDATE dbo.Uzivatel SET ChybnePokusy = 3, ZamcenoDo = ? WHERE UzivatelID = ?",
+                        self.ZA_15, self.uzivatel)
+        with self.ted(self.TED):
+            spravce = sluzby.seznam_uzivatelu.__wrapped__(self.spoj, UzivateleFiltr(hledat=self.cislo))
+            self.assertEqual(spravce.polozky[0].zamceno_do, self.ZA_15)     # ADMIN vidí, koho odemknout
+            self.prihlas_admina()
+            od = self.audit_zacatek()
+            data = self.ok(self.klient.post(f"/api/identita/uzivatele/{self.uzivatel}/odemknout",
+                                            json={"duvod": "oznameni na podrzi"}))
+            self.assertEqual((data["uzivatelId"], data["celeJmeno"], data["aktivni"], data["zamcenoDo"]),
+                             (self.uzivatel, "Jan Novak", True, None))
+            self.assertEqual(self.audity("UZIVATEL", self.uzivatel, od),
+                             [("ChybnePokusy", "3", "0", "oznameni na podrzi"),
+                              ("ZamcenoDo", self.ZA_15.isoformat(), None, "oznameni na podrzi")])
+            self.assertEqual(self.stav(self.uzivatel), (0, None))
+            self.ok(self.prihlaseni(self.cislo, PIN))        # uvolněný účet se přihlásí hned
+        self.assertEqual(self.pokusy(self.cislo)[-1], "USPECH")
+
+    def test_odemknuti_bez_zamku_se_neaudituje(self):
+        """Účet bez pokusů se nepřepisuje; cizí ID je NOT_FOUND jako u ostatních operací."""
+        self.prihlas_admina()
+        od = self.audit_zacatek()
+        data = self.ok(self.klient.post(f"/api/identita/uzivatele/{self.uzivatel}/odemknout",
+                                        json={"duvod": "volal na podrzi"}))
+        self.assertIsNone(data["zamcenoDo"])
+        self.assertEqual(self.audity("UZIVATEL", self.uzivatel, od), [])
+        self.chybnou(self.klient.post("/api/identita/uzivatele/999999/odemknout", json={"duvod": "test"}),
+                     404, "NOT_FOUND")
 
 
 class TestUzivatele(ZakladIdentit):
