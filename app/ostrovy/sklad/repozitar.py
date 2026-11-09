@@ -107,6 +107,11 @@ def seznam_upozorneni(spoj: Spojeni, filtr: UpozorneniFiltr) -> tuple[list[dict[
     return radky, celkem
 
 
+def upozorneni(spoj: Spojeni, upozorneni_id: int) -> dict[str, Any] | None:
+    """Jedno upozornění podle ID (i uzavřené), včetně dílu a pozice z přiřazení."""
+    return spoj.jeden(f"{_UPOZORNENI} WHERE u.UpozorneniID = ?", upozorneni_id)
+
+
 # --- zápis (běží v transakci služby; P5 – bez @transakce a bez commitu) ---------------------------
 
 def nastav_obsah(spoj: Spojeni, vnitrni_pozice_id: int, dil_id: int, pocet_ks: int) -> None:
@@ -126,20 +131,47 @@ def nastav_obsah(spoj: Spojeni, vnitrni_pozice_id: int, dil_id: int, pocet_ks: i
 
 
 def pridej_pohyb(spoj: Spojeni, *, typ_pohybu: str, dil_id: int, vnitrni_pozice_id: int, mnozstvi: int,
-                 stav_pred: int, stav_po: int, kdo: Kontext, poznamka: str | None) -> int:
-    """Vloží hareket (podepsaná změna, `TransakceID` ze spojení) a vrátí nové PohybID.
+                 stav_pred: int, stav_po: int, kdo: Kontext, poznamka: str | None,
+                 zpusob_potvrzeni: str | None = None) -> int:
+    """Vloží pohyb (podepsaná změna, `TransakceID` ze spojení) a vrátí nové PohybID.
 
     `Mnozstvi <> 0` a `StavPo = StavPred + Mnozstvi` hlídá CHECK ve tabulce; pravidla hlásí
-    AppError dřív, než se k SQL dostaneme. Chyby: NOT_FOUND (neznámý typ pohybu).
+    AppError dřív, než se k SQL dostaneme. `zpusob_potvrzeni` (SKEN/RUCNE) se posílá jen u pohybu
+    do cíle, ostatní mají NULL (D-18). Chyby: NOT_FOUND (neznámý typ pohybu).
     """
     typ_pohybu_id = spoj.hodnota("SELECT TypPohybuID FROM dbo.TypPohybu WHERE KodPohybu = ?", typ_pohybu)
     if typ_pohybu_id is None:
         raise AppError("NOT_FOUND", f"Typ pohybu {typ_pohybu} neexistuje.")
     return spoj.vloz(
         "INSERT INTO dbo.SkladovyPohyb (TypPohybuID, DilID, VnitrniPoziceID, Mnozstvi, StavPred, StavPo,"
-        " UzivatelID, TerminalID, TransakceID, Poznamka) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        " UzivatelID, TerminalID, TransakceID, Poznamka, ZpusobPotvrzeni) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         typ_pohybu_id, dil_id, vnitrni_pozice_id, mnozstvi, stav_pred, stav_po, kdo.uzivatel_id,
-        kdo.terminal_id, spoj.transakce_id, poznamka)
+        kdo.terminal_id, spoj.transakce_id, poznamka, zpusob_potvrzeni)
+
+
+def vloz_stat_misto(spoj: Spojeni, dil_id: int, vnitrni_pozice_id: int, minimalni_ks: int,
+                    optimalni_ks: int | None, maximalni_ks: int | None) -> int:
+    """Vloží aktivní statické přiřazení a vrátí nové StatickeUmisteniID.
+
+    Druhé aktivní místo téhož dílu nebo obsazenou pozici oznámí UX_StatickeUmisteni_Dil_Aktivni
+    resp. _Pozice_Aktivni a @transakce z toho udělá CONCURRENT_CHANGE (stejně jako u ObsahPozice).
+    """
+    return spoj.vloz("INSERT INTO dbo.StatickeUmisteniDilu (DilID, VnitrniPoziceID, MinimalniPocetKs,"
+                     " OptimalniPocetKs, MaximalniPocetKs) VALUES (?, ?, ?, ?, ?)",
+                     dil_id, vnitrni_pozice_id, minimalni_ks, optimalni_ks, maximalni_ks)
+
+
+def zmen_meze(spoj: Spojeni, stat_umisteni_id: int, minimalni_ks: int, optimalni_ks: int | None,
+              maximalni_ks: int | None) -> None:
+    """Nové min/opt/max aktivního přiřazení; upozornění zásoby přehodnocuje volající (5.8)."""
+    spoj.proved("UPDATE dbo.StatickeUmisteniDilu SET MinimalniPocetKs = ?, OptimalniPocetKs = ?,"
+                " MaximalniPocetKs = ? WHERE StatickeUmisteniID = ? AND Aktivni = 1",
+                minimalni_ks, optimalni_ks, maximalni_ks, stat_umisteni_id)
+
+
+def ukonci_stat_misto(spoj: Spojeni, stat_umisteni_id: int) -> None:
+    """Vypne přiřazení (Aktivni = 0); řádek zůstává jako historie, mazání je zakázané (migrace 004)."""
+    spoj.proved("UPDATE dbo.StatickeUmisteniDilu SET Aktivni = 0 WHERE StatickeUmisteniID = ?", stat_umisteni_id)
 
 
 def otevrene_upozorneni(spoj: Spojeni, stat_umisteni_id: int) -> dict[str, Any] | None:
@@ -166,7 +198,9 @@ def obnov_upozorneni(spoj: Spojeni, upozorneni_id: int, pocet_ks: int, minimalni
                 " WHERE UpozorneniID = ?", pocet_ks, minimalni_ks, typ_stavu, upozorneni_id)
 
 
-def uzavri_upozorneni(spoj: Spojeni, upozorneni_id: int, kdo: Kontext) -> None:
-    """Automatické uzavření při doplnění nad minimum (Q-13); poznámku má jen ruční uzavření."""
+def uzavri_upozorneni(spoj: Spojeni, upozorneni_id: int, kdo: Kontext,
+                      poznamka: str | None = None) -> None:
+    """Uzavření upozornění (Q-13); poznámku má ruční uzavření a ukončení STAT přiřazení."""
     spoj.proved("UPDATE dbo.UpozorneniZasoby SET StavUpozorneni = 'UZAVRENE', DatumUzavreni = SYSUTCDATETIME(),"
-                " UzavrelUzivatelID = ? WHERE UpozorneniID = ?", kdo.uzivatel_id, upozorneni_id)
+                " UzavrelUzivatelID = ?, Poznamka = ? WHERE UpozorneniID = ?", kdo.uzivatel_id, poznamka,
+                upozorneni_id)

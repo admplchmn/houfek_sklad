@@ -2,8 +2,8 @@
 
 Zápis i čtení zásoby nad SQL Serverem je v `test_sklad_sql.py`; tady zůstávají pravidla bez DB a
 HTTP testy, které databázi nepotřebují: chyby vstupu (400), chybějící oprávnění (403) a operace,
-které se rozhodnou dřív, než by něco zapsaly. STAT místa a ruční uzavření upozornění jsou KOSTRA
-až do kroku 2, proto se počítají nad vzorovými daty.
+které se rozhodnou dřív, než by něco zapsaly. STAT místa i ruční uzavření upozornění už zapisují
+nad SQL Serverem, proto tady z nich zbyly jen vzorový seznam a odmítnutí.
 """
 import re
 import sqlite3
@@ -36,8 +36,9 @@ def kod_chyby(funkce, *args, **kwargs) -> str:
     raise AssertionError("čekala se chyba")
 
 
-def kdo(*opravneni: str, role: str = "SKL") -> Kontext:
-    return Kontext(1, None, role, frozenset(opravneni))
+def kdo(*opravneni: str, role: str = "SKL", terminal_id: int | None = None) -> Kontext:
+    """Přihlášený kontext; `terminal_id` je PDA (login z terminálu, Q-15)."""
+    return Kontext(1, terminal_id, role, frozenset(opravneni))
 
 
 class TestZasobaAUpozorneni(unittest.TestCase):
@@ -135,9 +136,13 @@ class TestKontrolyOperaci(unittest.TestCase):
         over(MISTO_STAT, V1, prepsat_velikost=True, kdo=kdo(role="TECH"), duvod="přípravek se vejde")
 
     def test_zpusob_potvrzeni(self):
+        """Q-15, D-18: na PC ručně s oprávněním, na terminálu (PDA) vždy jen sken – ani s oprávněním ne."""
         domena.over_zpusob_potvrzeni("SKEN", kdo())
         domena.over_zpusob_potvrzeni("RUCNE", kdo("RUCNI_POTVRZENI"))
+        domena.over_zpusob_potvrzeni("SKEN", kdo(terminal_id=7))
         self.assertEqual(kod_chyby(domena.over_zpusob_potvrzeni, "RUCNE", kdo()), "NO_PERMISSION")
+        self.assertEqual(kod_chyby(domena.over_zpusob_potvrzeni, "RUCNE", kdo("RUCNI_POTVRZENI", terminal_id=7)),
+                         "VALIDATION_ERROR")
 
 
 class TestOperace(ZakladTestuOstrova):
@@ -210,50 +215,64 @@ class TestOperace(ZakladTestuOstrova):
         self.prihlas("DIL_CIST")
         self.over_chybu(self.post("/vydej", zdrojKod="BPLE037-A", pocetKs=1), 403, "NO_PERMISSION")
 
+    def test_t12_zadna_route_nastavi_pocet_ks(self):
+        """T12: kusy mění jen skladové příkazy a korekce – endpoint „nastav stav pozici“ ostrov E nemá."""
+        zapisy = {r.rule for r in self.app.url_map.iter_rules() if r.rule.startswith("/api/sklad")
+                  and set(r.methods) & {"POST", "PUT", "PATCH", "DELETE"}}
+        self.assertEqual(zapisy, {"/api/sklad/prijem-dyn", "/api/sklad/prijem-stat", "/api/sklad/presun",
+                                   "/api/sklad/vydej", "/api/sklad/stat-mista",
+                                   "/api/sklad/stat-mista/<int:stat_umisteni_id>",
+                                   "/api/sklad/stat-mista/<int:stat_umisteni_id>/ukoncit",
+                                   "/api/sklad/upozorneni/<int:upozorneni_id>/uzavrit"})
+        # stav pozice nijak z HTTP nesjede: ostrov F (inventura) volá `rozhrani.zauctuj_korekci`, ne endpoint E
+
 
 class TestStatMistaAUpozorneni(ZakladTestuOstrova):
+    """Zápis STAT míst i ruční uzavření výstrah běží nad SQL Serverem (`test_sklad_sql.py`).
+
+    Nad sqlite kostrou zůstávají cesty, které se rozhodnou dřív, než by ostrov něco zapisoval:
+    filtr seznamu, kontroly vstupu a oprávnění (Q-05) a odmítnutí obsazené pozice.
+    """
+
     ostrovy = OSTROVY
 
     def setUp(self):
         super().setUp()
         self.prihlas("DIL_CIST", "STAT_EDIT", "UPOZORNENI_UZAVRIT", role="TECH")
 
-    def test_seznam_a_prirazeni(self):
+    def test_seznam_stat_mist(self):
         self.assertEqual(self.over_ok(self.klient.get("/api/sklad/stat-mista"))["celkem"], 2)
         vycerpana = self.over_ok(self.klient.get("/api/sklad/stat-mista?stavZasoby=VYCERPANO"))["polozky"]
         self.assertEqual([m["kod"] for m in vycerpana], ["BSTAT037-2"])
+
+    def test_prirazeni_odmitne_velikost_dil_pozici_i_meze(self):
         nove = {"dilId": 12, "vnitrniPoziceId": 503, "minimalniKs": 5, "maximalniKs": 20}
         self.over_chybu(self.klient.post("/api/sklad/stat-mista", json=nove), 409, "SIZE_MISMATCH")
-        radek = self.over_ok(self.klient.post("/api/sklad/stat-mista", json={
-            **nove, "prepsatVelikost": True, "duvod": "díl V1 v přihrádce V3 vědomě"}))
-        self.assertEqual((radek["kod"], radek["stavZasoby"]), ("BSTAT037-3", "VYCERPANO"))
         self.over_chybu(self.klient.post("/api/sklad/stat-mista", json={**nove, "dilId": 14}), 409, "ALREADY_EXISTS")
         self.assertEqual(self.chybna_pole(self.klient.post("/api/sklad/stat-mista",
                                                            json={**nove, "vnitrniPoziceId": 101})), {"vnitrniPoziceId"})
         self.assertEqual(self.chybna_pole(self.klient.post("/api/sklad/stat-mista",
                                                            json={**nove, "minimalniKs": 30})), {"maximalniKs"})
 
-    def test_zmena_minima_a_ukonceni(self):
-        odpoved = self.klient.patch("/api/sklad/stat-mista/1", json={"minimalniKs": 15, "duvod": "vyšší spotřeba"})
-        self.assertEqual(self.over_ok(odpoved)["stavZasoby"], "POD_MINIMEM")
-        self.assertEqual([v["code"] for v in odpoved.json["varovani"]], ["UPOZORNENI"])
-        self.assertEqual(self.chybna_pole(self.klient.patch("/api/sklad/stat-mista/1", json={
-            "minimalniKs": None, "duvod": "test"})), {"minimalniKs"})
-        self.over_chybu(self.klient.post("/api/sklad/stat-mista/1/ukoncit", json={"duvod": "konec dílu"}),
-                        409, "NOT_EMPTY")
-        konec = self.klient.post("/api/sklad/stat-mista/2/ukoncit", json={"duvod": "díl se nevyrábí"})
-        self.assertFalse(self.over_ok(konec)["aktivni"])
-        self.assertEqual([v["code"] for v in konec.json["varovani"]], ["UPOZORNENI"])
+    def test_prepsat_velikost_smijen_technolog(self):
+        """Q-05: přepsání velikosti je do auditu i do oprávnění – operátor (role SKL) ho nedostane."""
+        self.prihlas("DIL_CIST", "STAT_EDIT", "UPOZORNENI_UZAVRIT", role="SKL")
+        self.over_chybu(self.klient.post("/api/sklad/stat-mista", json={
+            "dilId": 12, "vnitrniPoziceId": 503, "minimalniKs": 5, "maximalniKs": 20, "prepsatVelikost": True,
+            "duvod": "díl V1 v přihrádce V3 vědomě"}), 403, "NO_PERMISSION")
 
-    def test_upozorneni(self):
-        """Výčet upozornění nad SQL Serverem testuje test_sklad_sql.py; ruční uzavření je KOSTRA až krok 2."""
-        uzavrene = self.over_ok(self.klient.post("/api/sklad/upozorneni/1/uzavrit", json={"poznamka": "díl ruší"}))
-        self.assertEqual((uzavrene["stavUpozorneni"], uzavrene["poznamka"]), ("UZAVRENE", "díl ruší"))
-        self.assertIsNotNone(uzavrene["datumUzavreni"])
-        self.over_chybu(self.klient.post("/api/sklad/upozorneni/2/uzavrit", json={"poznamka": "znovu"}),
-                        409, "CONCURRENT_CHANGE")
-        self.over_chybu(self.klient.post("/api/sklad/upozorneni/99/uzavrit", json={"poznamka": "nic"}),
-                        404, "NOT_FOUND")
+    def test_zmena_mezi_a_ukonceni_chcuji_udaje(self):
+        self.assertEqual(self.chybna_pole(self.klient.patch("/api/sklad/stat-mista/1",
+                                                            json={"minimalniKs": None, "duvod": "test"})),
+                         {"minimalniKs"})
+        self.assertEqual(self.chybna_pole(self.klient.patch("/api/sklad/stat-mista/1", json={"minimalniKs": 15})),
+                         {"duvod"})
+        self.over_chybu(self.klient.post("/api/sklad/stat-mista/1/ukoncit", json={"duvod": "konec dílu"}),
+                        409, "NOT_EMPTY")                     # ve vzoru je na BSTAT037-1 obsah
+
+    def test_upozorneni_se_uzavira_jen_s_poznamkou(self):
+        self.assertEqual(self.chybna_pole(self.klient.post("/api/sklad/upozorneni/1/uzavrit", json={})),
+                         {"poznamka"})
 
 
 class TestVzorovaData(unittest.TestCase):

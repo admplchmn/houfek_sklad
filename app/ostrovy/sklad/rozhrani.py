@@ -10,6 +10,10 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass
 
+from app.ostrovy.dily import rozhrani as dily
+from app.ostrovy.struktura import rozhrani as struktura
+from app.platforma.audit import zapis
+from app.platforma.chyby import AppError, chyba_vstupu
 from app.platforma.db import Spojeni
 from app.platforma.typy import Kontext, PolozkaCiselniku
 
@@ -101,6 +105,22 @@ def stat_mista(spoj: Spojeni, *, vnitrni_pozice_ids: list[int] | None = None,
 
 # --- zápis (v transakci volajícího; volající už drží zámek pozice) ----------------------------
 
+def _prehodnot_upozorneni(spoj: Spojeni, kdo: Kontext, stat: StatMistoInfo, stav_po_ks: int) -> str:
+    """Přehodnotí upozornění zásoby STAT místa po změně stavu (5.8), zapíše ho a vrátí název akce.
+
+    Otevřené upozornění se čte s UPDLOCK – dvě operace nad týmž místem tak nevytvoří dvě.
+    """
+    otevrene = repozitar.otevrene_upozorneni(spoj, stat.stat_umisteni_id)
+    akce = domena.vyhodnot_upozorneni(stav_po_ks, stat.minimalni_ks, otevrene["TypStavu"] if otevrene else None)
+    if akce.akce == "ZALOZIT":
+        repozitar.zaloz_upozorneni(spoj, stat.stat_umisteni_id, stav_po_ks, stat.minimalni_ks, akce.typ_stavu)
+    elif akce.akce == "AKTUALIZOVAT":
+        repozitar.obnov_upozorneni(spoj, otevrene["UpozorneniID"], stav_po_ks, stat.minimalni_ks, akce.typ_stavu)
+    elif akce.akce == "UZAVRIT":
+        repozitar.uzavri_upozorneni(spoj, otevrene["UpozorneniID"], kdo)
+    return akce.akce
+
+
 def zauctuj_korekci(spoj: Spojeni, kdo: Kontext, vnitrni_pozice_id: int, dil_id: int, novy_stav_ks: int,
                     typ_pohybu: str, poznamka: str | None = None) -> PohybInfo:
     """Nastaví stav dílu na pozici na `novy_stav_ks` a zapíše rozdíl jako pohyb.
@@ -110,7 +130,63 @@ def zauctuj_korekci(spoj: Spojeni, kdo: Kontext, vnitrni_pozice_id: int, dil_id:
     Chyby: VALIDATION_ERROR (záporný stav, neznámý typ), WRONG_PART (STAT pozice jiného dílu),
     POSITION_OCCUPIED (na pozici je jiný díl).
     """
-    raise NotImplementedError("Ostrov E – fáze 1")
+    if typ_pohybu not in TYPY_KOREKCE:
+        raise chyba_vstupu(f"Typ korekce {typ_pohybu} neznámý.",
+                           {"typPohybu": f"Pošlete jeden z: {', '.join(TYPY_KOREKCE)}."})
+    if novy_stav_ks < 0:
+        raise chyba_vstupu("Stav na pozici nesmí být záporný.", {"novyStavKs": "Nejnižší možný stav je 0 ks."})
+    misto = struktura.nacti_mista(spoj, [vnitrni_pozice_id]).get(vnitrni_pozice_id)
+    if misto is None:
+        raise AppError("NOT_FOUND", f"Pozice {vnitrni_pozice_id} neexistuje nebo není aktivní.")
+    mista = stat_mista(spoj, vnitrni_pozice_ids=[vnitrni_pozice_id])
+    stat = mista[0] if mista else None
+    if misto.typ_boxu == "STAT" and (stat is None or stat.dil_id != dil_id):
+        raise AppError("WRONG_PART", f"{misto.kod} je statická pozice přiřazená jinému dílu.")
+    obsah = obsah_mist(spoj, [vnitrni_pozice_id]).get(vnitrni_pozice_id)
+    if obsah is not None and obsah.dil_id != dil_id:
+        raise AppError("POSITION_OCCUPIED", f"Na pozici {misto.kod} je {obsah.pocet_ks} ks jiného dílu.")
+    pred = obsah.pocet_ks if obsah else 0
+    if novy_stav_ks == pred:      # pohyb s nulovým množstvím schéma nedovolí (CK_SkladovyPohyb_Mnozstvi)
+        raise chyba_vstupu("Nový stav je stejný jako současný, korekce nemá co zapsat.",
+                           {"novyStavKs": f"Na pozici {misto.kod} už je {pred} ks tohoto dílu."})
+    repozitar.nastav_obsah(spoj, vnitrni_pozice_id, dil_id, novy_stav_ks)
+    pohyb_id = repozitar.pridej_pohyb(spoj, typ_pohybu=typ_pohybu, dil_id=dil_id, vnitrni_pozice_id=vnitrni_pozice_id,
+                                      mnozstvi=novy_stav_ks - pred, stav_pred=pred, stav_po=novy_stav_ks, kdo=kdo,
+                                      poznamka=poznamka)
+    if stat is not None:
+        _prehodnot_upozorneni(spoj, kdo, stat, novy_stav_ks)
+    return PohybInfo(pohyb_id, spoj.transakce_id, typ_pohybu, dil_id, vnitrni_pozice_id, novy_stav_ks - pred, pred,
+                     novy_stav_ks)
+
+
+def _prirad_stat_misto(spoj: Spojeni, kdo: Kontext, dil_id: int, vnitrni_pozice_id: int, minimalni_ks: int,
+                       optimalni_ks: int | None, maximalni_ks: int | None, *, prepsat_velikost: bool,
+                       duvod: str | None) -> int:
+    """Přiřadí díl STAT pozici a zapíše audit; pozici zamkne jako skladové příkazy. Vrací StatickeUmisteniID.
+
+    Společný základ `prirad_stat_misto` (migrace, velikost se přísně kontroluje) a služby
+    `zaloz_stat_misto` (administrace umí vědomé přepsání velikosti `prepsat_velikost` + důvod, Q-05).
+    Upozornění zásoby se při založení nezakládá – stav se vyhodnotí až první operací.
+    """
+    struktura.zamkni_mista(spoj, [vnitrni_pozice_id])
+    dil = dily.nacti_dily(spoj, [dil_id]).get(dil_id)
+    if dil is None or not dil.aktivni:
+        raise AppError("NOT_FOUND", f"Díl {dil_id} neexistuje nebo není aktivní.")
+    misto = struktura.nacti_mista(spoj, [vnitrni_pozice_id]).get(vnitrni_pozice_id)
+    if misto is None:
+        raise AppError("NOT_FOUND", f"Pozice {vnitrni_pozice_id} neexistuje nebo není aktivní.")
+    domena.over_min_opt_max(minimalni_ks, optimalni_ks, maximalni_ks)
+    domena.over_stat_pozici(misto, dil.potreba, prepsat_velikost=prepsat_velikost, kdo=kdo, duvod=duvod)
+    if stat_mista(spoj, dil_ids=[dil_id]):
+        raise AppError("ALREADY_EXISTS",
+                       f"Díl {dil.identifikacni_cislo} už má aktivní STAT místo (nejvýše jedno, Q-12).")
+    if stat_mista(spoj, vnitrni_pozice_ids=[vnitrni_pozice_id]):
+        raise AppError("ALREADY_EXISTS", f"Pozice {misto.kod} už je přiřazená jinému dílu.")
+    stat_id = repozitar.vloz_stat_misto(spoj, dil_id, vnitrni_pozice_id, minimalni_ks, optimalni_ks, maximalni_ks)
+    zapis(spoj, kdo, "STAT_UMISTENI", stat_id, "DilID", None, dil_id, duvod)
+    if prepsat_velikost and dil.potreba is not None and dil.potreba.velikost != misto.velikost:
+        zapis(spoj, kdo, "STAT_UMISTENI", stat_id, "VelikostPoziceID", misto.velikost, dil.potreba.velikost, duvod)
+    return stat_id
 
 
 def prirad_stat_misto(spoj: Spojeni, kdo: Kontext, dil_id: int, vnitrni_pozice_id: int, minimalni_ks: int,
@@ -120,4 +196,5 @@ def prirad_stat_misto(spoj: Spojeni, kdo: Kontext, dil_id: int, vnitrni_pozice_i
     Kontroluje velikost (Q-05), volnost pozice a 1 místo na díl (Q-12); zapíše audit.
     Chyby: ALREADY_EXISTS, SIZE_MISMATCH, NOT_FOUND, VALIDATION_ERROR.
     """
-    raise NotImplementedError("Ostrov E – fáze 1")
+    return _prirad_stat_misto(spoj, kdo, dil_id, vnitrni_pozice_id, minimalni_ks, optimalni_ks, maximalni_ks,
+                              prepsat_velikost=False, duvod=duvod)

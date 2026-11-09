@@ -1,8 +1,8 @@
 """Služby ostrova E – Sklad: pohyby a zásoby. Jedna operace = @transakce, čtení = @cteni.
 
-Fáze 1: SQL je v `repozitar.py`. Skladové příkazy i upozornění zásoby zapisují nad SQL Serverem,
-čtecí funkce rozhraní (`obsah_mist`, `posledni_pohyby`, `stat_mista`, `nacti_ciselniky`) mají
-i vzorová data pro běh bez databáze. STAT místa a ruční uzavření výstrah jsou na kroku 2.
+Fáze 1: SQL je v `repozitar.py`. Všechny operace ostrova (skladové příkazy, STAT místa, upozornění
+zásoby i korekce) zapisují nad SQL Serverem; čtecí funkce rozhraní (`obsah_mist`, `posledni_pohyby`,
+`stat_mista`, `nacti_ciselniky`) mají i vzorová data pro běh bez databáze.
 
 Postup každého skladového příkazu ve fázi 1 (jedna transakce, sekce 5.2 a 5.3):
   1. struktura.najdi_vnitrni_pozici pro zdroj i cíl (kód ze štítku, dlouhý tvar se ověří),
@@ -13,11 +13,14 @@ Postup každého skladového příkazu ve fázi 1 (jedna transakce, sekce 5.2 a 
 """
 from __future__ import annotations
 
+from typing import Any
+
 from app.ostrovy.dily import rozhrani as dily
 from app.ostrovy.struktura import rozhrani as struktura
+from app.platforma.audit import zapis
 from app.platforma.chyby import AppError, chyba_vstupu
 from app.platforma.db import Spojeni, cteni
-from app.platforma.kontrakty import DuvodVstup, Seznam, Strana, Varovani, teď
+from app.platforma.kontrakty import DuvodVstup, Seznam, Strana, Varovani
 from app.platforma.transakce import transakce
 from app.platforma.typy import Kontext
 
@@ -43,7 +46,6 @@ from .kontrakty import (
 )
 from .rozhrani import StatMistoInfo
 
-NOVE_ID = 9001        # KOSTRA: ID nového STAT místa ve vzorových odpovědích (STAT místa jsou na kroku 2)
 VYSLEDEK_UPOZORNENI = {"ZALOZIT": "ZALOZENO", "AKTUALIZOVAT": "AKTUALIZOVANO", "UZAVRIT": "UZAVRENO", "NIC": None}
 
 # --- čtení ------------------------------------------------------------------------------------
@@ -81,21 +83,10 @@ def seznam_stat_mist(spoj: Spojeni, filtr: StatMistaFiltr) -> Strana[StatMistoRa
 
 @cteni
 def seznam_upozorneni(spoj: Spojeni, filtr: UpozorneniFiltr) -> Strana[UpozorneniRadek]:
-    """Upozornění zásoby, nejnovější první. Výchozí filtr = jen otevřená.
-
-    Číslo dílu a kód pozice patří ostrovům D a C – doplňují se přes jejich rozhraní.
-    """
+    """Upozornění zásoby, nejnovější první. Výchozí filtr = jen otevřená."""
     radky, celkem = repozitar.seznam_upozorneni(spoj, filtr)
-    mista = struktura.nacti_mista(spoj, [r["VnitrniPoziceID"] for r in radky])
-    dil_info = dily.nacti_dily(spoj, [r["DilID"] for r in radky])
-    return Strana[UpozorneniRadek](
-        polozky=[UpozorneniRadek(
-            upozorneni_id=r["UpozorneniID"], stat_umisteni_id=r["StatickeUmisteniID"], dil_id=r["DilID"],
-            identifikacni_cislo=dil_info[r["DilID"]].identifikacni_cislo, kod=mista[r["VnitrniPoziceID"]].kod,
-            typ_stavu=r["TypStavu"], stav_upozorneni=r["StavUpozorneni"], aktualni_pocet_ks=r["AktualniPocetKs"],
-            minimalni_pocet_ks=r["MinimalniPocetKs"], datum_vzniku=r["DatumVzniku"],
-            datum_uzavreni=r["DatumUzavreni"], poznamka=r["Poznamka"]) for r in radky],
-        strana=filtr.strana, velikost=filtr.velikost, celkem=celkem)
+    return Strana[UpozorneniRadek](polozky=_upozorneni_radky(spoj, radky), strana=filtr.strana,
+                                   velikost=filtr.velikost, celkem=celkem)
 
 
 # --- skladové příkazy (requestId) -------------------------------------------------------------------
@@ -117,7 +108,8 @@ def prijem_dyn(spoj: Spojeni, vstup: PrijemDynVstup, kdo: Kontext) -> SkladovyVy
     repozitar.nastav_obsah(spoj, cil.vnitrni_pozice_id, dil.dil_id, vstup.pocet_ks)
     return SkladovyVysledek(
         dil_id=dil.dil_id, identifikacni_cislo=dil.identifikacni_cislo, pocet_ks=vstup.pocet_ks,
-        pohyby=[_pohyb(spoj, kdo, vstup.poznamka, "PRIJEM", cil, dil.dil_id, 0, vstup.pocet_ks)],
+        pohyby=[_pohyb(spoj, kdo, vstup.poznamka, "PRIJEM", cil, dil.dil_id, 0, vstup.pocet_ks,
+                       vstup.zpusob_potvrzeni)],
         zdroj=None, cil=_stav_mista(spoj, cil), stav_zasoby=None, upozorneni=None)
 
 
@@ -148,8 +140,9 @@ def prijem_stat(spoj: Spojeni, vstup: PrijemStatVstup, kdo: Kontext) -> Skladovy
     pred = obsah[cil.vnitrni_pozice_id].pocet_ks if cil.vnitrni_pozice_id in obsah else 0
     repozitar.nastav_obsah(spoj, cil.vnitrni_pozice_id, dil.dil_id, pred + vstup.pocet_ks)
     # uskladnění z výroby je PRIJEM, ze DYN pozice PRESUN-OUT + PRESUN-IN se stejným TransakceID (Q-08)
+    # cílový pohyb nese ověřený způsob potvrzení (D-18), zdrojový PRESUN-OUT má NULL
     pohyby.append(_pohyb(spoj, kdo, vstup.poznamka, "PRESUN-IN" if zdroj else "PRIJEM", cil, dil.dil_id, pred,
-                         pred + vstup.pocet_ks))
+                         pred + vstup.pocet_ks, vstup.zpusob_potvrzeni))
     stav_zasoby, upozorneni = _vyhodnot_stat(spoj, kdo, stat, pred + vstup.pocet_ks)
     varovani = domena.varovani_nad_maximem(pred + vstup.pocet_ks, stat.maximalni_ks, cil.kod)
     return SkladovyVysledek(
@@ -202,7 +195,8 @@ def presun(spoj: Spojeni, vstup: PresunVstup, kdo: Kontext) -> SkladovyVysledek:
     return SkladovyVysledek(
         dil_id=davka.dil_id, identifikacni_cislo=dil.identifikacni_cislo, pocet_ks=davka.pocet_ks,
         pohyby=[_pohyb(spoj, kdo, vstup.poznamka, "PRESUN-OUT", zdroj, davka.dil_id, davka.pocet_ks, 0),
-                _pohyb(spoj, kdo, vstup.poznamka, "PRESUN-IN", cil, davka.dil_id, 0, davka.pocet_ks)],
+                _pohyb(spoj, kdo, vstup.poznamka, "PRESUN-IN", cil, davka.dil_id, 0, davka.pocet_ks,
+                       vstup.zpusob_potvrzeni)],
         zdroj=_stav_mista(spoj, zdroj), cil=_stav_mista(spoj, cil), stav_zasoby=None, upozorneni=None)
 
 
@@ -211,39 +205,39 @@ def presun(spoj: Spojeni, vstup: PresunVstup, kdo: Kontext) -> SkladovyVysledek:
 
 @transakce("STAT_MISTO_ZALOZENI")
 def zaloz_stat_misto(spoj: Spojeni, vstup: NoveStatMistoVstup, kdo: Kontext) -> StatMistoRadek:
-    """Přiřadí díl STAT pozici s min/opt/max (kap. 13). Ve fázi 1 deleguje na rozhrani.prirad_stat_misto.
+    """Přiřadí díl STAT pozici s min/opt/max (kap. 13) – stejný základ jako rozhrani.prirad_stat_misto.
 
+    Služba navíc umí vědomé přepsání velikosti (`prepsatVelikost` + důvod, jen TECH/ADMIN, Q-05).
     Chyby: NOT_FOUND, VALIDATION_ERROR, SIZE_MISMATCH, NO_PERMISSION (přepsání velikosti),
     ALREADY_EXISTS (díl už STAT místo má – Q-12, nebo pozice už je přiřazená).
     """
-    dil = _nacti_dil(spoj, vstup.dil_id)
-    misto = struktura.nacti_mista(spoj, [vstup.vnitrni_pozice_id]).get(vstup.vnitrni_pozice_id)
-    if misto is None:
-        raise AppError("NOT_FOUND", f"Pozice {vstup.vnitrni_pozice_id} neexistuje nebo není aktivní.")
-    domena.over_min_opt_max(vstup.minimalni_ks, vstup.optimalni_ks, vstup.maximalni_ks)
-    domena.over_stat_pozici(misto, dil.potreba, prepsat_velikost=vstup.prepsat_velikost, kdo=kdo, duvod=vstup.duvod)
-    if rozhrani.stat_mista(spoj, dil_ids=[dil.dil_id]):
-        raise AppError("ALREADY_EXISTS",
-                       f"Díl {dil.identifikacni_cislo} už má aktivní STAT místo (nejvýše jedno, Q-12).")
-    if rozhrani.stat_mista(spoj, vnitrni_pozice_ids=[misto.vnitrni_pozice_id]):
-        raise AppError("ALREADY_EXISTS", f"Pozice {misto.kod} už je přiřazená jinému dílu.")
-    novy = StatMistoInfo(NOVE_ID, dil.dil_id, misto.vnitrni_pozice_id, vstup.minimalni_ks, vstup.optimalni_ks,
+    stat_id = rozhrani._prirad_stat_misto(
+        spoj, kdo, vstup.dil_id, vstup.vnitrni_pozice_id, vstup.minimalni_ks, vstup.optimalni_ks, vstup.maximalni_ks,
+        prepsat_velikost=vstup.prepsat_velikost, duvod=vstup.duvod)
+    novy = StatMistoInfo(stat_id, vstup.dil_id, vstup.vnitrni_pozice_id, vstup.minimalni_ks, vstup.optimalni_ks,
                          vstup.maximalni_ks)
     return _stat_radky(spoj, [novy])[0]
 
 
 @transakce("STAT_MISTO_ZMENA")
 def zmen_stat_misto(spoj: Spojeni, stat_umisteni_id: int, vstup: ZmenaStatMistaVstup, kdo: Kontext) -> StatMistoRadek:
-    """Nové min/opt/max; upozornění se přehodnotí stejnými pravidly (5.8) – výsledek je ve varování."""
+    """Nové min/opt/max; měněná pole jdou do auditu a upozornění se přehodnotí stejnými pravidly
+    (5.8) – výsledek je ve varování. Chyby: NOT_FOUND, VALIDATION_ERROR."""
     stat = _nacti_stat_misto(spoj, stat_umisteni_id)
+    struktura.zamkni_mista(spoj, [stat.vnitrni_pozice_id])
     zmena = vstup.zmenena_pole()
     novy = StatMistoInfo(stat.stat_umisteni_id, stat.dil_id, stat.vnitrni_pozice_id,
                          zmena.get("minimalni_ks", stat.minimalni_ks), zmena.get("optimalni_ks", stat.optimalni_ks),
                          zmena.get("maximalni_ks", stat.maximalni_ks))
     domena.over_min_opt_max(novy.minimalni_ks, novy.optimalni_ks, novy.maximalni_ks)
+    for pole, sloupec in (("minimalni_ks", "MinimalniPocetKs"), ("optimalni_ks", "OptimalniPocetKs"),
+                          ("maximalni_ks", "MaximalniPocetKs")):
+        if getattr(novy, pole) != getattr(stat, pole):
+            zapis(spoj, kdo, "STAT_UMISTENI", stat_umisteni_id, sloupec, getattr(stat, pole), getattr(novy, pole),
+                  vstup.duvod)
+    repozitar.zmen_meze(spoj, stat_umisteni_id, novy.minimalni_ks, novy.optimalni_ks, novy.maximalni_ks)
     radek = _stat_radky(spoj, [novy])[0]
-    # UPDATE mezí i dosavadní otevřené upozornění patří kroku 2; tuhle zprávu jen přehodnotí pravidlo 5.8
-    upozorneni = VYSLEDEK_UPOZORNENI[domena.vyhodnot_upozorneni(radek.stav_ks, novy.minimalni_ks, None).akce]
+    _, upozorneni = _vyhodnot_stat(spoj, kdo, novy, radek.stav_ks)   # přehodnotí a zapíše (5.8)
     if upozorneni is None:
         return radek
     zprava = {"ZALOZENO": "založeno upozornění", "AKTUALIZOVANO": "upozornění změněno",
@@ -255,16 +249,20 @@ def zmen_stat_misto(spoj: Spojeni, stat_umisteni_id: int, vstup: ZmenaStatMistaV
 @transakce("STAT_MISTO_UKONCENI")
 def ukonci_stat_misto(spoj: Spojeni, stat_umisteni_id: int, vstup: DuvodVstup, kdo: Kontext) -> StatMistoRadek:
     """Ukončí přiřazení prázdné pozice (Aktivni = 0, historie zůstává); otevřené upozornění se uzavře
-    s poznámkou. Štítek pozice se přetiskne bez čísla dílu. Chyby: NOT_FOUND, NOT_EMPTY."""
-    from . import ukazky  # KOSTRA (fáze 0)
-
+    s poznámkou (Q-13), audit se píše s důvodem. Přetisk štítku bez čísla dílu až na pilotu (Q-19).
+    Chyby: NOT_FOUND, NOT_EMPTY."""
     stat = _nacti_stat_misto(spoj, stat_umisteni_id)
+    struktura.zamkni_mista(spoj, [stat.vnitrni_pozice_id])
     radek = _stat_radky(spoj, [stat])[0]
     if radek.stav_ks > 0:
         raise AppError("NOT_EMPTY", f"Na {radek.kod} je {radek.stav_ks} ks. Přiřazení se ukončí jen u prázdné pozice.")
-    otevrene = any(u.stat_umisteni_id == stat_umisteni_id and u.stav_upozorneni == "OTEVRENE"
-                   for u in ukazky.UPOZORNENI)
-    varovani = (Varovani(VAROVANI_UPOZORNENI, "Otevřené upozornění zásoby bylo uzavřeno."),) if otevrene else ()
+    repozitar.ukonci_stat_misto(spoj, stat_umisteni_id)
+    zapis(spoj, kdo, "STAT_UMISTENI", stat_umisteni_id, "Aktivni", True, False, vstup.duvod)
+    otevrene = repozitar.otevrene_upozorneni(spoj, stat_umisteni_id)
+    varovani = ()
+    if otevrene is not None:
+        repozitar.uzavri_upozorneni(spoj, otevrene["UpozorneniID"], kdo, poznamka=vstup.duvod)
+        varovani = (Varovani(VAROVANI_UPOZORNENI, "Otevřené upozornění zásoby bylo uzavřeno."),)
     return radek.model_copy(update={"aktivni": False, "varovani": varovani})
 
 
@@ -274,16 +272,19 @@ def ukonci_stat_misto(spoj: Spojeni, stat_umisteni_id: int, vstup: DuvodVstup, k
 @transakce("UPOZORNENI_UZAVRENI")
 def uzavri_upozorneni(spoj: Spojeni, upozorneni_id: int, vstup: UzavreniUpozorneniVstup,
                       kdo: Kontext) -> UpozorneniRadek:
-    """Ruční uzavření s poznámkou (Q-13). Chyby: NOT_FOUND, CONCURRENT_CHANGE (už uzavřené)."""
-    from . import ukazky  # KOSTRA (fáze 0)
+    """Ruční uzavření s poznámkou (Q-13); zavírá MISTR nebo ADMIN s UPOZORNENI_UZAVRIT.
 
-    upozorneni = next((u for u in ukazky.UPOZORNENI if u.upozorneni_id == upozorneni_id), None)
-    if upozorneni is None:
+    Chyby: NOT_FOUND, CONCURRENT_CHANGE (už uzavřené).
+    """
+    zadano = repozitar.upozorneni(spoj, upozorneni_id)
+    if zadano is None:
         raise AppError("NOT_FOUND", f"Upozornění {upozorneni_id} neexistuje.")
-    if upozorneni.stav_upozorneni != "OTEVRENE":
+    # otevřené upozornění místa čteme s UPDLOCK – podruhé už otevřené není (souběžné uzavření počká)
+    otevrene = repozitar.otevrene_upozorneni(spoj, zadano["StatickeUmisteniID"])
+    if otevrene is None or otevrene["UpozorneniID"] != upozorneni_id:
         raise AppError("CONCURRENT_CHANGE", "Upozornění už je uzavřené.")
-    return upozorneni.model_copy(update={"stav_upozorneni": "UZAVRENE", "datum_uzavreni": teď(),
-                                         "poznamka": vstup.poznamka})
+    repozitar.uzavri_upozorneni(spoj, upozorneni_id, kdo, poznamka=vstup.poznamka)
+    return _upozorneni_radky(spoj, [repozitar.upozorneni(spoj, upozorneni_id)])[0]
 
 
 # --- pomocné -------------------------------------------------------------------------------------
@@ -337,33 +338,37 @@ def _stat_radky(spoj: Spojeni, stat: list[StatMistoInfo]) -> list[StatMistoRadek
     return radky
 
 
+def _upozorneni_radky(spoj: Spojeni, radky: list[dict[str, Any]]) -> list[UpozorneniRadek]:
+    """Číslo dílu a kód pozice patří ostrovům D a C – doplňují se přes jejich rozhraní."""
+    mista = struktura.nacti_mista(spoj, [r["VnitrniPoziceID"] for r in radky])
+    dil_info = dily.nacti_dily(spoj, [r["DilID"] for r in radky])
+    return [UpozorneniRadek(
+        upozorneni_id=r["UpozorneniID"], stat_umisteni_id=r["StatickeUmisteniID"], dil_id=r["DilID"],
+        identifikacni_cislo=dil_info[r["DilID"]].identifikacni_cislo, kod=mista[r["VnitrniPoziceID"]].kod,
+        typ_stavu=r["TypStavu"], stav_upozorneni=r["StavUpozorneni"], aktualni_pocet_ks=r["AktualniPocetKs"],
+        minimalni_pocet_ks=r["MinimalniPocetKs"], datum_vzniku=r["DatumVzniku"], datum_uzavreni=r["DatumUzavreni"],
+        poznamka=r["Poznamka"]) for r in radky]
+
+
 def _vyhodnot_stat(spoj: Spojeni, kdo: Kontext, stat: StatMistoInfo | None,
                    stav_po_ks: int) -> tuple[str | None, str | None]:
-    """Zásobový stav STAT místa po operaci a co se stane s jeho upozorněním (5.8), včetně zápisu.
-
-    Otevřené upozornění se čte s UPDLOCK – dvě operace nad týmž místem tak nevytvoří dvě.
-    """
+    """Zásobový stav STAT místa po operaci a co se stalo s jeho upozorněním (5.8), včetně zápisu."""
     if stat is None:
         return None, None
-    otevrene = repozitar.otevrene_upozorneni(spoj, stat.stat_umisteni_id)
-    akce = domena.vyhodnot_upozorneni(stav_po_ks, stat.minimalni_ks,
-                                      otevrene["TypStavu"] if otevrene else None)
-    if akce.akce == "ZALOZIT":
-        repozitar.zaloz_upozorneni(spoj, stat.stat_umisteni_id, stav_po_ks, stat.minimalni_ks, akce.typ_stavu)
-    elif akce.akce == "AKTUALIZOVAT":
-        repozitar.obnov_upozorneni(spoj, otevrene["UpozorneniID"], stav_po_ks, stat.minimalni_ks, akce.typ_stavu)
-    elif akce.akce == "UZAVRIT":
-        repozitar.uzavri_upozorneni(spoj, otevrene["UpozorneniID"], kdo)
-    return domena.stav_zasoby(stav_po_ks, stat.minimalni_ks), VYSLEDEK_UPOZORNENI[akce.akce]
+    return (domena.stav_zasoby(stav_po_ks, stat.minimalni_ks),
+            VYSLEDEK_UPOZORNENI[rozhrani._prehodnot_upozorneni(spoj, kdo, stat, stav_po_ks)])
 
 
 def _pohyb(spoj: Spojeni, kdo: Kontext, poznamka: str | None, typ: str, misto: struktura.MistoInfo, dil_id: int,
-           pred: int, po: int) -> PohybRadek:
-    """Zapíše hareket (podepsaná změna, `TransakceID` ze spojení) a vrátí řádek s novým PohybID."""
+           pred: int, po: int, zpusob_potvrzeni: str | None = None) -> PohybRadek:
+    """Zapíše pohyb (podepsaná změna, `TransakceID` ze spojení) a vrátí řádek s novým PohybID.
+
+    `zpusob_potvrzeni` (SKEN/RUCNE) se posílá jen u pohybu do cíle, ostatní mají NULL (D-18).
+    """
     mnozstvi = po - pred
     pohyb_id = repozitar.pridej_pohyb(
         spoj, typ_pohybu=typ, dil_id=dil_id, vnitrni_pozice_id=misto.vnitrni_pozice_id, mnozstvi=mnozstvi,
-        stav_pred=pred, stav_po=po, kdo=kdo, poznamka=poznamka)
+        stav_pred=pred, stav_po=po, kdo=kdo, poznamka=poznamka, zpusob_potvrzeni=zpusob_potvrzeni)
     return PohybRadek(pohyb_id=pohyb_id, typ_pohybu=typ, vnitrni_pozice_id=misto.vnitrni_pozice_id, kod=misto.kod,
                       mnozstvi=mnozstvi, stav_pred_ks=pred, stav_po_ks=po)
 
