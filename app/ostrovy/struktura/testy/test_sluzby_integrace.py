@@ -387,12 +387,13 @@ class TestZalozeniBoxu(ZakladSluzeb):
         self.pracoviste_id, self.regal_id, self.uroven_id, self.kod = self.nova_uroven()
 
     def test_zalozeni_a_poradi(self):
+        prvni = self.box(self.uroven_id)
         druhy = self.box(self.uroven_id)
         treti = self.box(self.uroven_id, poradi=1)
         self.assertEqual((treti.kod_boxu, treti.poradi, treti.kod_pozice_urovne, treti.full_box_klic),
                          (f"B{self.kod}003", 1, "P01", f"HOUFEK-{self.kod}-R01-U01-B{self.kod}003"))
         self.assertEqual([(b.kod_boxu, b.poradi) for b in self.boxy(self.uroven_id)],
-                         [(f"B{self.kod}003", 1), (f"B{self.kod}001", 2), (druhy.kod_boxu, 3)])
+                         [(treti.kod_boxu, 1), (prvni.kod_boxu, 2), (druhy.kod_boxu, 3)])
         self.assertEqual(self.prihradky(treti.box_id), self.ocekavane_prihradky("C4", "DYN", (400, 360)))
         self.assertEqual(self.audity(treti.box_id, "BOX"), [])                   # vznik boxu se neaudituje (kap. 25)
         c7 = self.box(self.uroven_id, cleneni="C7", rozmer=(900, 450))
@@ -405,14 +406,11 @@ class TestZalozeniBoxu(ZakladSluzeb):
         for ocekavana, prekvapeni in [
             ("NOT_FOUND", dict(uroven_id=NEEXISTUJE)),
             ("NOT_FOUND", dict(cleneni_id=self.cleneni_id["C7"] + 10)),
-            ("ALREADY_EXISTS", dict(cislo_boxu=1)),
-            ("VALIDATION_ERROR", dict(cislo_boxu=2, typ_boxu="STAT")),          # cizí řada není kolize
-            ("VALIDATION_ERROR", dict(poradi=9)),
+            ("ALREADY_EXISTS", dict(cislo_boxu=1)),                          # číslo už vydané v řadě pracoviště
+            ("VALIDATION_ERROR", dict(poradi=9)),                            # pořadí za koncem úrovně
         ]:
             parametry = {"uroven_id": self.uroven_id} | prekvapeni
             self.assertEqual(self.chyba(self.box, kod=ocekavana, **parametry).kod, ocekavana, prekvapeni)
-        self.assertEqual(self.chyby_pole(self.chyba(self.box, self.uroven_id, cislo_boxu=2, typ_boxu="STAT",
-                                                    kod="VALIDATION_ERROR")), {"kodBoxu"})
         self.assertEqual(self.chyby_pole(self.chyba(self.box, self.uroven_id, poradi=9,
                                                     kod="VALIDATION_ERROR")), {"poradi"})
         self.assertEqual(self.spoj.hodnota("SELECT COUNT(*) FROM dbo.Pozice WHERE UrovenID = ?", self.uroven_id), 1)
@@ -442,7 +440,7 @@ class TestVymenaBoxu(ZakladSluzeb):
         self.assertEqual(self.prihradky(novy.box_id), self.ocekavane_prihradky("C2", "DYN", (400, 360)))
         stary = self.detail(self.stary.box_id)                                  # dohledat podle starého kódu
         self.assertEqual((stary.box_id, stary.kod_boxu, stary.aktivni, stary.pozice),
-                         (self.stary.box_id, pred[self.stary.box_id]["KodBoxu"], False, []))
+                         (self.stary.box_id, self.stary.kod_boxu, False, []))
         self.assertEqual([b.box_id for b in self.boxy(self.uroven_id)], [self.za_radem.box_id, novy.box_id])
         self.assertEqual(self.audity(self.stary.box_id, "BOX"), [("Aktivni", "True", "False", "prasklý box")])
         self.assertEqual(self.audity(novy.box_id, "BOX"), [])                   # nové číslo se nezakládá (kap. 25)

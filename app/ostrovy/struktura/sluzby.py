@@ -352,8 +352,10 @@ def nastav_rozmer_c7(spoj: Spojeni, vnitrni_pozice_id: int, vstup: RozmerC7Vstup
         raise AppError("NOT_EMPTY", f"Na pozici {misto['KodBoxu']}-{misto['KodPozice']} je zásoba."
                                     " Rozměr C7 se mění jen u prázdné pozice.")
     puvodni = {"DelkaMM": misto["RozmerC7DelkaMM"], "HloubkaMM": misto["RozmerC7HloubkaMM"]}
-    _prepsat(spoj, kdo, "VnitrniPoziceBoxu", vnitrni_pozice_id, _SLOUPCE_C7, puvodni, vstup.zmenena_pole(),
-             vstup.duvod, typ_objektu="VNITRNI_POZICE_BOXU")
+    # obě pole jsou povinná, `RozmerC7Vstup` není model změny a nemá `zmenena_pole()`
+    _prepsat(spoj, kdo, "VnitrniPoziceBoxu", vnitrni_pozice_id, _SLOUPCE_C7, puvodni,
+             {"delka_mm": vstup.delka_mm, "hloubka_mm": vstup.hloubka_mm}, vstup.duvod,
+             typ_objektu="VNITRNI_POZICE_BOXU")
     return _detail_pozice(_nacti_pozici(spoj, vnitrni_pozice_id))
 
 
