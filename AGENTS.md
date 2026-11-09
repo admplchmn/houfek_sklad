@@ -16,7 +16,7 @@ Platí pro každého, kdo mění kód v tomto repozitáři, ať je to člověk, 
 - Endpointy, modely v `kontrakty.py`, funkce v `rozhrani.py` a sloupce pohledů se jen přidávají. Přejmenování nebo odebrání odmítne kontrola kontraktů (P10).
 - Databáze PowerKey se zatím nepoužívá, ani pro testy. Napojení přijde později jako samostatné zadání.
 - Hesla a přístupy nikdy do repozitáře (`.env` je v `.gitignore`).
-- Když zadání neříká, jak má něco fungovat (otázky Q-xx, kódy a štítky, skladový proces), nic si nevymýšlej. Zeptej se vedoucího projektu a do té doby dělej jen to, co je jasné.
+- Když zadání neříká, jak má něco fungovat (otázky Q-xx, kódy a štítky, skladový proces), nic si nevymýšlej. Zeptej se vedoucího projektu a do té doby dělej jen to, co je jasné. Otázky, které už vedoucí projektu rozhodl, jsou v [docs/soulad-se-zadanim.md](docs/soulad-se-zadanim.md), sekci „Rozhodnutí vedoucího projektu“ – rozhodnutí platí i před výchozím řešením, o kterém píše docstring kterékoli funkce.
 
 ## Jak tvoje práce zapadne do ostatních
 

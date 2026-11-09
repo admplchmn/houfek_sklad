@@ -1,13 +1,13 @@
 # Technický dluh – registr
 
-**Stav k:** 3. 11. 2026 · **Vlastní:** vedoucí projektu, položky Platformy P1 · **Aktualizace:** při každé revizi a na každé bráně (K1–K4)
+**Stav k:** 9. 11. 2026 · **Vlastní:** vedoucí projektu, položky Platformy P1 · **Aktualizace:** při každé revizi a na každé bráně (K1–K4)
 
 **Co je potřeba nejdřív:**
 - **Spustit integrační testy T-SQL** na testovacím SQL Serveru v Dockeru (TD-01).
 - **Dovést CI do zelené** (TD-02): repozitář je na GitHubu, běh #1 padl za 0 s na validaci workflowu (kontext `env` v `jobs.<id>.env`), opraveno. Chybí zelený běh #2.
 - **Rozhodnout, zda má být repozitář veřejný** (TD-26): `github.com/admplchmn/houfek_sklad` je public, tedy i rozbor firemního XLSM a zadání. Hesla v něm nejsou, ale obsah je firemní.
 
-Splaceno: TD-18, TD-19 (revize 26. 10.), TD-08, TD-09, TD-12, TD-15 (revize 1. 11.), TD-04 (3. 11., Docker), TD-11 (3. 11., UTC). TD-01 má hotový harness i testovací server, zbývá ho spustit.
+Splaceno: TD-18, TD-19 (revize 26. 10.), TD-08, TD-09, TD-12, TD-15 (revize 1. 11.), TD-04 (3. 11., Docker), TD-11 (3. 11., UTC), TD-25 a S-19 (9. 11., migrace 005). TD-01 má hotový harness i testovací server, zbývá ho spustit.
 
 ## Jak se hodnotí
 
@@ -32,11 +32,10 @@ Splaceno: TD-18, TD-19 (revize 26. 10.), TD-08, TD-09, TD-12, TD-15 (revize 1. 1
 | TD-26 | Repozitář `admplchmn/houfek_sklad` je na GitHubu **veřejný** (GitHub API odpoví i bez přihlášení). V tree nic citlivého není – `.env`, `ssh_to_git_push.txt` a soukromé klíče `git ls-files` neukazují – ale veřejné je zadání, rozbor firemního XLSM (`migrace-xlsm.md`) a kompletní kód | Infrastruktura | 4 | 5 | 1 | **60** | 0,1 d (přepnout na private, nebo to potvrdit) | Firemní data a postup skladu jsou čitelné komukoli. Hesla jsme nevyndali, ale i tohle je důsledek pushu, který je potřeba vědomě schválit. | rozhodne vedoucí + firma, než do toho začnou psát ostatní ostrovy |
 | TD-18 | Dokumenty „Analýza“ a „Ostrovy“ neodpovídaly kódu (8.1 SQLAlchemy/Alembic, chybějící kódy chyb, počty tabulek, pohledy) | Dokumentace | 3 | 3 | 1 | 30 | 0,5 d | Programátor podle dokumentu napíše jiný kód, než Platforma umí. | **splaceno 26. 10.** |
 | TD-19 | Kostry rozhraní vracejí vzorová data i v provozu | Kód | 2 | 4 | 1 | 30 | 0,25 d | Terminál by ukázal vymyšlenou zásobu jako skutečnou. Teď v provozním režimu selže (`app/platforma/kostra.py`). | **splaceno 26. 10.** |
-| TD-25 | `InventuraPolozka.PosledniPohybID` ve schématu chybí (D8, S-19); stav položky CEKA / ZAPSANO / PREPOCITAT se z něj odvozuje | Schéma | 2 | 4 | 1 | **30** | 0,25 d (migrace) | Bez něj inventura nepozná, že se pozice od zápisu změnila, a zaúčtuje rozdíl proti cizímu stavu. | po rozhodnutí Q-16, před fází 1 ostrova F |
 | TD-05 | Závislosti bez zámku verzí, jen spodní meze (S-03) | Závislosti | 2 | 3 | 1 | **25** | 0,5 d | Nová verze knihovny může rozbít build nebo provoz bez změny v našem kódu. | teď (`pip freeze` na první vývojové stanici) |
-| TD-24 | Zakládací POST bez přirozeného klíče nejsou idempotentní: `POST /api/struktura/urovne/{id}/boxy` bez `cisloBoxu` a `POST /api/inventura` (S-15) | Kód | 2 | 3 | 1 | **25** | 0,25 d (`skladova=True` u dvou operací) | Dvojklik na „Přidat box“ založí dva boxy s dalšími čísly řady. | fáze 1 (C, F), rozhodne P1 |
-| TD-06 | Sdílené PDA: relace platí 12 h, bez limitu nečinnosti (S-05) | Kód (bezpečnost) | 2 | 4 | 2 | **24** | 0,5 d + rozhodnutí | Další člověk u PDA zapisuje pohyby pod cizím jménem. Audit by ukazoval špatnou osobu. | fáze 1 (ostrov B) |
-| TD-07 | PIN: hash argon2 + zámek po opakovaných chybných pokusech (S-06) | Kód (bezpečnost) | 2 | 4 | 2 | **24** | 1–2 d | Krátký číselný PIN (4–6 číslic) jde bez zámku vyzkoušet během minut až hodin. | fáze 1 (ostrov B) |
+| TD-24 | Zakládací POST bez přirozeného klíče nejsou idempotentní: `POST /api/struktura/urovne/{id}/boxy` bez `cisloBoxu` a `POST /api/inventura` (S-15) | Kód | 2 | 3 | 1 | **25** | 0,25 d (`skladova=True` u dvou operací) | Dvojklik na „Přidat box“ založí dva boxy s dalšími čísly řady. | fáze obrazovek, povinné před pilotem (D-22) |
+| TD-06 | Sdílené PDA: relace platí 12 h, bez limitu nečinnosti (S-05) | Kód (bezpečnost) | 2 | 4 | 2 | **24** | 0,5 d + rozhodnutí | Další člověk u PDA zapisuje pohyby pod cizím jménem. Audit by ukazoval špatnou osobu. | fáze 1 (ostrov B), rozhodnuto D-34 (PDA 15 min, limit na PC ještě otevřený) |
+| TD-07 | PIN: hash argon2 + zámek po opakovaných chybných pokusech (S-06) | Kód (bezpečnost) | 2 | 4 | 2 | **24** | 1–2 d | Krátký číselný PIN (4–6 číslic) jde bez zámku vyzkoušet během minut až hodin. | fáze 1 (ostrov B), rozhodnuto D-33 (5 pokusů → zámek na 15 min) |
 | TD-20 | Monitoring a alerty nejsou nastavené (`/zdravi`, logy, souběh) | Infrastruktura | 1 | 4 | 2 | **20** | 1 d (IT) | Výpadek DB nebo vývojový režim na provozu si nikdo nevšimne, dokud nezavolá sklad. | před pilotem |
 | TD-23 | `sken.js` a `api.js` neověřené na skutečném PDA a čtečce (PDA Chainway s vestavěnou čtečkou, 2. 11.) | Testy | 2 | 3 | 2 | **20** | 1 d | Čtečka může posílat jiný konec řádku (Tab, CR), takže tok skenu nebude fungovat. | na kusu Chainway, nejpozději ve fázi 3 (UI) |
 | TD-10 | Noční kontrola integrity: úloha, alert, doba běhu (`v_KontrolaIntegrity` prochází historii) (S-09) | Infrastruktura | 2 | 2 | 2 | **16** | 1 d | Rozjetí dat se zjistí až při inventuře. | před pilotem |
@@ -57,10 +56,9 @@ D = dopad, R = riziko, P = pracnost. S-xx = doporučení z code review fáze 0 (
 | S-16 | Kontrolu „pozice nejvýš v jedné rozpracované inventuře“ dělat až po `zamkni_mista(ids)`, jinak dvě souběžná založení překryv neuvidí | fáze 1, vlastník F |
 | S-17 | Zámek po chybných pokusech PINu potřebuje zápis: přihlášení bude `@transakce("PRIHLASENI")` (pojistka CR-29) | fáze 1, vlastník B |
 | S-18 | Přehledy G jedním dotazem nad pohledy `v_*` místo skládání přes rozhraní (indexy jsou v 001) | fáze 1, vlastník G |
-| S-19 | `InventuraPolozka.PosledniPohybID` (= TD-25), migrace až po Q-16 | po Q-16, P1 |
 | S-20 | `GET /stitky` (PDF) čeká na vzhled štítku (Q-19); test „co se vytiskne, jde přečíst“ už je | pilot, vlastník C |
 | S-21 | Kódy pracoviště, regálu a úrovně jsou v barcode, PATCH je nemění; přejmenování = přetisk štítků a přepočet `FullBoxKlic`. Rozhodne vlastník procesu. | otevřený bod |
-| S-22 | JINY_DIL v DYN pozici zaúčtuje nalezený díl na stejnou pozici i při jiné velikosti; rozhodnout, zda povinný cíl (Q-17) platí i pro DYN | Q-17 |
+| S-22 | JINY_DIL v DYN pozici zaúčtuje nalezený díl na stejnou pozici i při jiné velikosti; povinný cíl platí i pro DYN, bez cíle nejde inventuru dokončit | rozhodnuto D-27, vlastník F |
 
 ## Plán splácení (souběžně s vývojem funkcí)
 
@@ -69,7 +67,7 @@ Pravidlo: **~15 % kapacity každého sprintu** jde na dluh. Položky Platformy n
 | Kdy | Položky | Podmínka splnění |
 |---|---|---|
 | **Teď (fáze 0 → 1)** | TD-26 (veřejný repozitář), TD-01 (spustit), TD-05, TD-02 (doladit CI do zelené) | `python -m nastroje.testovaci_db` a `over_vse` projdou na testovacím serveru v Dockeru; CI zelené na prvním pull requestu |
-| **Fáze 1, před 1. zápisem pohybu (E)** | TD-01 (testy C a E proti `HoufekSklad_TEST`), TD-24, TD-25 (po Q-16) | integrační vrstva běží v CI nebo ručně proti `HoufekSklad_TEST` v Dockeru; dvojklik nezaloží dva boxy |
+| **Fáze 1, před 1. zápisem pohybu (E)** | TD-01 (testy C a E proti `HoufekSklad_TEST`), TD-24 | integrační vrstva běží v CI nebo ručně proti `HoufekSklad_TEST` v Dockeru; dvojklik nezaloží dva boxy |
 | **Fáze 1, s ostrovem B** | TD-07 (čeká na Q-33), TD-06 (čeká na Q-34) | přihlášení PINem se zámkem; limit nečinnosti rozhodnutý a nastavený |
 | **Brána K3 (backend hotový, souběhové testy G3)** | TD-01 (testy E: souběh, `requestId`) | souběžné testy přesunů A→B / B→A bez deadlocku |
 | **Před pilotem (fáze 4)** | TD-20, TD-10, TD-21, TD-13, TD-23, TD-03 (provozní DB) | zkušební nasazení podle [provoz.md](provoz.md); alert z `/zdravi` dorazí; PDA projde tok skenu |
@@ -90,3 +88,4 @@ Pravidlo: **~15 % kapacity každého sprintu** jde na dluh. Položky Platformy n
 | CR-22 … CR-33 | 1.–2. 11. 2026 | opravy z code review 1. 11. včetně doplňku (záznam `jiz_nepotrebne/revize/2026-11-01-code-review.md`), každá s testem |
 | TD-04 | 3. 11. 2026 | testovací SQL Server v Dockeru (`docker-compose.yml`), `nastroje/testovaci_db.py`, harness zakládá `HoufekSklad_TEST` s RCSI (`tests/test_integrace_harness.py`) |
 | TD-11 | 3. 11. 2026 | **UTC jako jediná časová báze** (rozhodnutí vedoucího, před prvním spuštěním 001): v `DATETIME2` se ukládá UTC, DEFAULT `SYSUTCDATETIME()` (migrace 001, 002, `migrace_db.py`), aplikace bere čas `platforma.kontrakty.teď()` a najevo serializuje `Cas` pražským časem s posunem. Testy `TestCasovaKonvence` + `test_casove_defaulty_jsou_utc` |
+| TD-25 | 9. 11. 2026 | migrace `005_rozhodnuti_9_11.sql`: `InventuraPolozka.PosledniPohybID` s cizím klíčem na `SkladovyPohyb` (rozhodnutí D-26, uzavírá i S-19); test `tests/integrace/test_migrace_005.py` |
