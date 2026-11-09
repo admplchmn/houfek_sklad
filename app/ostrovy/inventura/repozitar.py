@@ -96,14 +96,16 @@ def pohyby_po_vodoznaku(spoj: Spojeni, vodoznaky: dict[int, int | None]) -> dict
 
 def zaloz(spoj: Spojeni, *, typ_rozsahu: str, cil_id: int | None, slepa: bool, uzivatel_id: int,
           poznamka: str | None) -> int:
-    """Vloží hlavičku inventury (DatumZahajeni = SYSUTCDATETIME()). Cíl rozsahu jde do sloupce
+    """Vloží hlavičku inventury jako rozpracovanou – StavInventury DEFAULT v tabulce nemá, proto je
+    v INSERTu přímo. DatumZahajeni doplní SYSUTCDATETIME(). Cíl rozsahu jde do sloupce
     podle TypRozsahu, ostatní zůstávají NULL (CK_Inventura_Rozsah). Vrací InventuraID."""
     cil = {sloupec: cil_id if _CIL_ROZSAHU.get(typ_rozsahu) == sloupec else None
            for sloupec in _CIL_ROZSAHU.values()}
-    return spoj.vloz("INSERT INTO dbo.Inventura (TypRozsahu, PracovisteID, RegalID, UrovenID, BoxID,"
-                     " VnitrniPoziceID, SlepaInventura, ZalozilUzivatelID, Poznamka)"
-                     " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", typ_rozsahu, cil["PracovisteID"], cil["RegalID"],
-                     cil["UrovenID"], cil["BoxID"], cil["VnitrniPoziceID"], slepa, uzivatel_id, poznamka)
+    return spoj.vloz("INSERT INTO dbo.Inventura (TypRozsahu, StavInventury, PracovisteID, RegalID, UrovenID,"
+                     " BoxID, VnitrniPoziceID, SlepaInventura, ZalozilUzivatelID, Poznamka)"
+                     " VALUES (?, 'ROZPRACOVANA', ?, ?, ?, ?, ?, ?, ?)", typ_rozsahu, cil["PracovisteID"],
+                     cil["RegalID"], cil["UrovenID"], cil["BoxID"], cil["VnitrniPoziceID"], slepa, uzivatel_id,
+                     poznamka)
 
 
 def pridej_polozky(spoj: Spojeni, inventura_id: int, snimek: Sequence[tuple[int, int | None, int]]) -> None:
