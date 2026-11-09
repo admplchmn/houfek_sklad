@@ -139,9 +139,11 @@ class ZakladInventury(ZakladIntegrace):
                             nalezeny: tuple[int | None, int] | None = None):
         """Naplní pozici, založí inventuru přes rozsah POZICE a zapíše nález (výchozí = shoda).
 
-        Vrací (inventuraId, zapsaná položka). Bez dílu je pozice prázdná a zápis hlásí prázdnou.
+        Vrací (inventuraId, zapsaná položka). Bez dílu pozice prázdná zůstává a zápis hlásí prázdnou.
         """
-        if dil_id is not None:
+        if dil_id is None:
+            pocet_ks = 0        # bez dílu je pozice prázdná, tudíž i očekávaný počet je 0
+        else:
             self.prijem(misto, dil_id, pocet_ks)
         inventura_id = self.inventura("POZICE", misto.vnitrni_pozice_id).inventura_id
         return inventura_id, self.zapis(inventura_id, misto, *(nalezeny or (dil_id, pocet_ks)))
@@ -213,8 +215,8 @@ class TestZalozeni(ZakladInventury):
 
         druhe = self.over_chybu(lambda: self.inventura("REGAL", self.regal), "ALREADY_EXISTS")
 
-        self.assertIn(self.dyn[0].kod, druhe.message)
-        self.assertIn(str(prvni.inventura_id), druhe.message)
+        self.assertIn(self.dyn[0].kod, druhe.zprava)
+        self.assertIn(str(prvni.inventura_id), druhe.zprava)
         self.assertEqual(self.spoj.hodnota("SELECT COUNT(*) FROM dbo.Inventura WHERE ZalozilUzivatelID = ?",
                                            self.kdo.uzivatel_id), 1)
 
@@ -348,7 +350,7 @@ class TestStavPolozkyPoZapisu(ZakladInventury):
         misto = self.dyn[0]
         inventura_id, _ = self.inventura_na_pozici(misto, self.dil_a, 10, nalezeny=(self.dil_a, 8))
 
-        self.vydej(misto, 8)                                  # pozice je prázdná, doúčtovat -2 nejde
+        self.vydej(misto, 9)                                  # zbývá 1 ks, doúčtovat -2 by šlo pod nulu
 
         self.assertEqual(self.polozka(inventura_id, misto).stav_polozky, "PREPOCITAT")
 
@@ -371,7 +373,7 @@ class TestStavPolozkyPoZapisu(ZakladInventury):
 
         polozka = self.polozka(inventura_id, misto)
         self.assertEqual(polozka.stav_polozky, "PREPOCITAT")
-        self.assertEqual(polozka.kod, str(misto.vnitrni_pozice_id))    # štítek už neznáme, žílí se ID
+        self.assertEqual(polozka.kod, str(misto.vnitrni_pozice_id))    # štítek už neznáme, položka je bez jména
 
 
 class TestZruseni(ZakladInventury):
@@ -405,7 +407,7 @@ class TestDokonceni(ZakladInventury):
         self.zapis(inventura_id, self.dyn[0], self.dil_a, 10)
 
         chyba = self.over_chybu(lambda: self.dokonci(inventura_id), "VALIDATION_ERROR")
-        self.assertIn(self.dyn[1].kod, chyba.message)
+        self.assertIn(self.dyn[1].kod, chyba.zprava)
 
     def test_pozice_k_prepoctu_brani_dokonceni(self):
         misto = self.dyn[0]
