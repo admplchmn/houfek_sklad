@@ -1,8 +1,8 @@
 """Služby ostrova E – Sklad: pohyby a zásoby. Jedna operace = @transakce, čtení = @cteni.
 
-Fáze 0: kontrakt a čistá pravidla (domena) jsou hotové, stav skladu je vzorový (KOSTRA) – operace
-spočítají výsledek nad vzorovými daty, ale nic neuloží. Ve fázi 1 vlastník nahradí řádky
-`from . import ukazky` a `rozhrani.obsah_mist/stat_mista` voláním repozitar.*; podpisy se nemění.
+Fáze 1: SQL je v `repozitar.py`. Skladové příkazy i upozornění zásoby zapisují nad SQL Serverem,
+čtecí funkce rozhraní (`obsah_mist`, `posledni_pohyby`, `stat_mista`, `nacti_ciselniky`) mají
+i vzorová data pro běh bez databáze. STAT místa a ruční uzavření výstrah jsou na kroku 2.
 
 Postup každého skladového příkazu ve fázi 1 (jedna transakce, sekce 5.2 a 5.3):
   1. struktura.najdi_vnitrni_pozici pro zdroj i cíl (kód ze štítku, dlouhý tvar se ověří),
@@ -21,7 +21,7 @@ from app.platforma.kontrakty import DuvodVstup, Seznam, Strana, Varovani, teď
 from app.platforma.transakce import transakce
 from app.platforma.typy import Kontext
 
-from . import domena, rozhrani
+from . import domena, repozitar, rozhrani
 from .kontrakty import (
     VAROVANI_UPOZORNENI,
     KandidatiFiltr,
@@ -41,10 +41,9 @@ from .kontrakty import (
     VydejVstup,
     ZmenaStatMistaVstup,
 )
-from .rozhrani import ObsahInfo, StatMistoInfo
+from .rozhrani import StatMistoInfo
 
-NOVE_ID = 9001        # KOSTRA: ID nového STAT místa ve vzorových odpovědích
-NOVY_POHYB = 70001    # KOSTRA: PohybID prvního nového pohybu
+NOVE_ID = 9001        # KOSTRA: ID nového STAT místa ve vzorových odpovědích (STAT místa jsou na kroku 2)
 VYSLEDEK_UPOZORNENI = {"ZALOZIT": "ZALOZENO", "AKTUALIZOVAT": "AKTUALIZOVANO", "UZAVRIT": "UZAVRENO", "NIC": None}
 
 # --- čtení ------------------------------------------------------------------------------------
@@ -82,13 +81,21 @@ def seznam_stat_mist(spoj: Spojeni, filtr: StatMistaFiltr) -> Strana[StatMistoRa
 
 @cteni
 def seznam_upozorneni(spoj: Spojeni, filtr: UpozorneniFiltr) -> Strana[UpozorneniRadek]:
-    """Upozornění zásoby, nejnovější první. Výchozí filtr = jen otevřená."""
-    from . import ukazky  # KOSTRA (fáze 0)
+    """Upozornění zásoby, nejnovější první. Výchozí filtr = jen otevřená.
 
-    radky = sorted((u for u in ukazky.UPOZORNENI
-                    if filtr.stav in (None, u.stav_upozorneni) and filtr.dil_id in (None, u.dil_id)
-                    and filtr.typ_stavu in (None, u.typ_stavu)), key=lambda u: u.datum_vzniku, reverse=True)
-    return Strana[UpozorneniRadek](polozky=radky, strana=filtr.strana, velikost=filtr.velikost, celkem=len(radky))
+    Číslo dílu a kód pozice patří ostrovům D a C – doplňují se přes jejich rozhraní.
+    """
+    radky, celkem = repozitar.seznam_upozorneni(spoj, filtr)
+    mista = struktura.nacti_mista(spoj, [r["VnitrniPoziceID"] for r in radky])
+    dil_info = dily.nacti_dily(spoj, [r["DilID"] for r in radky])
+    return Strana[UpozorneniRadek](
+        polozky=[UpozorneniRadek(
+            upozorneni_id=r["UpozorneniID"], stat_umisteni_id=r["StatickeUmisteniID"], dil_id=r["DilID"],
+            identifikacni_cislo=dil_info[r["DilID"]].identifikacni_cislo, kod=mista[r["VnitrniPoziceID"]].kod,
+            typ_stavu=r["TypStavu"], stav_upozorneni=r["StavUpozorneni"], aktualni_pocet_ks=r["AktualniPocetKs"],
+            minimalni_pocet_ks=r["MinimalniPocetKs"], datum_vzniku=r["DatumVzniku"],
+            datum_uzavreni=r["DatumUzavreni"], poznamka=r["Poznamka"]) for r in radky],
+        strana=filtr.strana, velikost=filtr.velikost, celkem=celkem)
 
 
 # --- skladové příkazy (requestId) -------------------------------------------------------------------
@@ -107,12 +114,11 @@ def prijem_dyn(spoj: Spojeni, vstup: PrijemDynVstup, kdo: Kontext) -> SkladovyVy
     struktura.zamkni_mista(spoj, [cil.vnitrni_pozice_id])
     obsah = rozhrani.obsah_mist(spoj, [cil.vnitrni_pozice_id])
     domena.over_cil_prijmu_dyn(cil, dil.potreba, obsah.get(cil.vnitrni_pozice_id))
-    po: dict[int, ObsahInfo | None] = {}
-    _nastav(po, cil, dil.dil_id, vstup.pocet_ks)
+    repozitar.nastav_obsah(spoj, cil.vnitrni_pozice_id, dil.dil_id, vstup.pocet_ks)
     return SkladovyVysledek(
         dil_id=dil.dil_id, identifikacni_cislo=dil.identifikacni_cislo, pocet_ks=vstup.pocet_ks,
-        pohyby=[_pohyb(0, "PRIJEM", cil, 0, vstup.pocet_ks)], zdroj=None, cil=_stav_mista(spoj, cil, po),
-        stav_zasoby=None, upozorneni=None)
+        pohyby=[_pohyb(spoj, kdo, vstup.poznamka, "PRIJEM", cil, dil.dil_id, 0, vstup.pocet_ks)],
+        zdroj=None, cil=_stav_mista(spoj, cil), stav_zasoby=None, upozorneni=None)
 
 
 @transakce("PRIJEM_STAT", skladova=True)
@@ -131,23 +137,24 @@ def prijem_stat(spoj: Spojeni, vstup: PrijemStatVstup, kdo: Kontext) -> Skladovy
     obsah = rozhrani.obsah_mist(spoj, ids)
     stat = _stat_misto_pozice(spoj, cil.vnitrni_pozice_id)
     domena.over_cil_uskladneni_stat(cil, stat, dil.dil_id, obsah.get(cil.vnitrni_pozice_id))
-    po: dict[int, ObsahInfo | None] = {}
     pohyby = []
     if zdroj is not None:
         if zdroj.typ_boxu != "DYN" or zdroj.vnitrni_pozice_id == cil.vnitrni_pozice_id:
             raise chyba_vstupu("Zdrojem uskladnění do STAT je dynamická pozice.", {"zdrojKod": "Zdroj musí být DYN."})
         zdroj_obsah = domena.over_zdroj(zdroj, obsah.get(zdroj.vnitrni_pozice_id), vstup.pocet_ks, dil_id=dil.dil_id)
         zbyva = zdroj_obsah.pocet_ks - vstup.pocet_ks
-        _nastav(po, zdroj, dil.dil_id, zbyva)
-        pohyby.append(_pohyb(0, "PRESUN-OUT", zdroj, zdroj_obsah.pocet_ks, zbyva))
+        repozitar.nastav_obsah(spoj, zdroj.vnitrni_pozice_id, dil.dil_id, zbyva)
+        pohyby.append(_pohyb(spoj, kdo, vstup.poznamka, "PRESUN-OUT", zdroj, dil.dil_id, zdroj_obsah.pocet_ks, zbyva))
     pred = obsah[cil.vnitrni_pozice_id].pocet_ks if cil.vnitrni_pozice_id in obsah else 0
-    _nastav(po, cil, dil.dil_id, pred + vstup.pocet_ks)
-    pohyby.append(_pohyb(len(pohyby), "PRESUN-IN" if zdroj else "PRIJEM", cil, pred, pred + vstup.pocet_ks))
-    stav_zasoby, upozorneni = _vyhodnot_stat(stat, pred + vstup.pocet_ks)
+    repozitar.nastav_obsah(spoj, cil.vnitrni_pozice_id, dil.dil_id, pred + vstup.pocet_ks)
+    # uskladnění z výroby je PRIJEM, ze DYN pozice PRESUN-OUT + PRESUN-IN se stejným TransakceID (Q-08)
+    pohyby.append(_pohyb(spoj, kdo, vstup.poznamka, "PRESUN-IN" if zdroj else "PRIJEM", cil, dil.dil_id, pred,
+                         pred + vstup.pocet_ks))
+    stav_zasoby, upozorneni = _vyhodnot_stat(spoj, kdo, stat, pred + vstup.pocet_ks)
     varovani = domena.varovani_nad_maximem(pred + vstup.pocet_ks, stat.maximalni_ks, cil.kod)
     return SkladovyVysledek(
         dil_id=dil.dil_id, identifikacni_cislo=dil.identifikacni_cislo, pocet_ks=vstup.pocet_ks, pohyby=pohyby,
-        zdroj=_stav_mista(spoj, zdroj, po) if zdroj else None, cil=_stav_mista(spoj, cil, po),
+        zdroj=_stav_mista(spoj, zdroj) if zdroj else None, cil=_stav_mista(spoj, cil),
         stav_zasoby=stav_zasoby, upozorneni=upozorneni, varovani=(varovani,) if varovani else ())
 
 
@@ -164,14 +171,14 @@ def vydej(spoj: Spojeni, vstup: VydejVstup, kdo: Kontext) -> SkladovyVysledek:
                               vstup.pocet_ks, ocekavany_stav_ks=vstup.ocekavany_stav_ks)
     dil = _nacti_dil(spoj, obsah.dil_id)
     zbyva = obsah.pocet_ks - vstup.pocet_ks
-    po: dict[int, ObsahInfo | None] = {}
-    _nastav(po, zdroj, dil.dil_id, zbyva)
+    repozitar.nastav_obsah(spoj, zdroj.vnitrni_pozice_id, dil.dil_id, zbyva)
+    pohyb = _pohyb(spoj, kdo, vstup.poznamka, "VYDEJ", zdroj, dil.dil_id, obsah.pocet_ks, zbyva)
     stav_zasoby, upozorneni = (None, None)
     if zdroj.typ_boxu == "STAT":
-        stav_zasoby, upozorneni = _vyhodnot_stat(_stat_misto_pozice(spoj, zdroj.vnitrni_pozice_id), zbyva)
+        stav_zasoby, upozorneni = _vyhodnot_stat(spoj, kdo, _stat_misto_pozice(spoj, zdroj.vnitrni_pozice_id), zbyva)
     return SkladovyVysledek(
         dil_id=dil.dil_id, identifikacni_cislo=dil.identifikacni_cislo, pocet_ks=vstup.pocet_ks,
-        pohyby=[_pohyb(0, "VYDEJ", zdroj, obsah.pocet_ks, zbyva)], zdroj=_stav_mista(spoj, zdroj, po), cil=None,
+        pohyby=[pohyb], zdroj=_stav_mista(spoj, zdroj), cil=None,
         stav_zasoby=stav_zasoby, upozorneni=upozorneni)
 
 
@@ -190,13 +197,13 @@ def presun(spoj: Spojeni, vstup: PresunVstup, kdo: Kontext) -> SkladovyVysledek:
     zdroj_obsah = obsah.get(zdroj.vnitrni_pozice_id)
     dil = _nacti_dil(spoj, zdroj_obsah.dil_id) if zdroj_obsah else None
     davka = domena.over_presun(zdroj, cil, zdroj_obsah, obsah.get(cil.vnitrni_pozice_id), dil.potreba if dil else None)
-    po: dict[int, ObsahInfo | None] = {}
-    _nastav(po, zdroj, davka.dil_id, 0)
-    _nastav(po, cil, davka.dil_id, davka.pocet_ks)
+    repozitar.nastav_obsah(spoj, zdroj.vnitrni_pozice_id, davka.dil_id, 0)
+    repozitar.nastav_obsah(spoj, cil.vnitrni_pozice_id, davka.dil_id, davka.pocet_ks)
     return SkladovyVysledek(
         dil_id=davka.dil_id, identifikacni_cislo=dil.identifikacni_cislo, pocet_ks=davka.pocet_ks,
-        pohyby=[_pohyb(0, "PRESUN-OUT", zdroj, davka.pocet_ks, 0), _pohyb(1, "PRESUN-IN", cil, 0, davka.pocet_ks)],
-        zdroj=_stav_mista(spoj, zdroj, po), cil=_stav_mista(spoj, cil, po), stav_zasoby=None, upozorneni=None)
+        pohyby=[_pohyb(spoj, kdo, vstup.poznamka, "PRESUN-OUT", zdroj, davka.dil_id, davka.pocet_ks, 0),
+                _pohyb(spoj, kdo, vstup.poznamka, "PRESUN-IN", cil, davka.dil_id, 0, davka.pocet_ks)],
+        zdroj=_stav_mista(spoj, zdroj), cil=_stav_mista(spoj, cil), stav_zasoby=None, upozorneni=None)
 
 
 # --- STAT místa (STAT_EDIT) -------------------------------------------------------------------------
@@ -235,7 +242,8 @@ def zmen_stat_misto(spoj: Spojeni, stat_umisteni_id: int, vstup: ZmenaStatMistaV
                          zmena.get("maximalni_ks", stat.maximalni_ks))
     domena.over_min_opt_max(novy.minimalni_ks, novy.optimalni_ks, novy.maximalni_ks)
     radek = _stat_radky(spoj, [novy])[0]
-    _, upozorneni = _vyhodnot_stat(novy, radek.stav_ks)
+    # UPDATE mezí i dosavadní otevřené upozornění patří kroku 2; tuhle zprávu jen přehodnotí pravidlo 5.8
+    upozorneni = VYSLEDEK_UPOZORNENI[domena.vyhodnot_upozorneni(radek.stav_ks, novy.minimalni_ks, None).akce]
     if upozorneni is None:
         return radek
     zprava = {"ZALOZENO": "založeno upozornění", "AKTUALIZOVANO": "upozornění změněno",
@@ -329,36 +337,45 @@ def _stat_radky(spoj: Spojeni, stat: list[StatMistoInfo]) -> list[StatMistoRadek
     return radky
 
 
-def _vyhodnot_stat(stat: StatMistoInfo | None, stav_po_ks: int) -> tuple[str | None, str | None]:
-    """Zásobový stav STAT místa po operaci a co se stane s jeho upozorněním (5.8)."""
+def _vyhodnot_stat(spoj: Spojeni, kdo: Kontext, stat: StatMistoInfo | None,
+                   stav_po_ks: int) -> tuple[str | None, str | None]:
+    """Zásobový stav STAT místa po operaci a co se stane s jeho upozorněním (5.8), včetně zápisu.
+
+    Otevřené upozornění se čte s UPDLOCK – dvě operace nad týmž místem tak nevytvoří dvě.
+    """
     if stat is None:
         return None, None
-    from . import ukazky  # KOSTRA (fáze 0)
-
-    otevrene = next((u.typ_stavu for u in ukazky.UPOZORNENI
-                     if u.stat_umisteni_id == stat.stat_umisteni_id and u.stav_upozorneni == "OTEVRENE"), None)
-    akce = domena.vyhodnot_upozorneni(stav_po_ks, stat.minimalni_ks, otevrene)
+    otevrene = repozitar.otevrene_upozorneni(spoj, stat.stat_umisteni_id)
+    akce = domena.vyhodnot_upozorneni(stav_po_ks, stat.minimalni_ks,
+                                      otevrene["TypStavu"] if otevrene else None)
+    if akce.akce == "ZALOZIT":
+        repozitar.zaloz_upozorneni(spoj, stat.stat_umisteni_id, stav_po_ks, stat.minimalni_ks, akce.typ_stavu)
+    elif akce.akce == "AKTUALIZOVAT":
+        repozitar.obnov_upozorneni(spoj, otevrene["UpozorneniID"], stav_po_ks, stat.minimalni_ks, akce.typ_stavu)
+    elif akce.akce == "UZAVRIT":
+        repozitar.uzavri_upozorneni(spoj, otevrene["UpozorneniID"], kdo)
     return domena.stav_zasoby(stav_po_ks, stat.minimalni_ks), VYSLEDEK_UPOZORNENI[akce.akce]
 
 
-def _nastav(zmeny: dict[int, ObsahInfo | None], misto: struktura.MistoInfo, dil_id: int, pocet_ks: int) -> None:
-    """Obsah pozice po operaci; 0 ks = None = řádek ObsahPozice se smaže (DYN pozice je volná)."""
-    zmeny[misto.vnitrni_pozice_id] = ObsahInfo(misto.vnitrni_pozice_id, dil_id, pocet_ks) if pocet_ks > 0 else None
+def _pohyb(spoj: Spojeni, kdo: Kontext, poznamka: str | None, typ: str, misto: struktura.MistoInfo, dil_id: int,
+           pred: int, po: int) -> PohybRadek:
+    """Zapíše hareket (podepsaná změna, `TransakceID` ze spojení) a vrátí řádek s novým PohybID."""
+    mnozstvi = po - pred
+    pohyb_id = repozitar.pridej_pohyb(
+        spoj, typ_pohybu=typ, dil_id=dil_id, vnitrni_pozice_id=misto.vnitrni_pozice_id, mnozstvi=mnozstvi,
+        stav_pred=pred, stav_po=po, kdo=kdo, poznamka=poznamka)
+    return PohybRadek(pohyb_id=pohyb_id, typ_pohybu=typ, vnitrni_pozice_id=misto.vnitrni_pozice_id, kod=misto.kod,
+                      mnozstvi=mnozstvi, stav_pred_ks=pred, stav_po_ks=po)
 
 
-def _pohyb(poradi: int, typ: str, misto: struktura.MistoInfo, pred: int, po: int) -> PohybRadek:
-    return PohybRadek(pohyb_id=NOVY_POHYB + poradi, typ_pohybu=typ, vnitrni_pozice_id=misto.vnitrni_pozice_id,
-                      kod=misto.kod, mnozstvi=po - pred, stav_pred_ks=pred, stav_po_ks=po)
+def _stav_mista(spoj: Spojeni, misto: struktura.MistoInfo) -> StavMista:
+    """Pozice a stav jejího boxu po operaci (12.2: po vyprázdnění je box volný, pokud není blokovaný).
 
-
-def _stav_mista(spoj: Spojeni, misto: struktura.MistoInfo, zmeny: dict[int, ObsahInfo | None]) -> StavMista:
-    """Pozice a stav jejího boxu po operaci (12.2: po vyprázdnění je box volný, pokud není blokovaný)."""
-    pozice_boxu = struktura.pozice_v_rozsahu(spoj, "BOX", misto.box_id)
-    obsah_boxu: dict[int, ObsahInfo | None] = {**rozhrani.obsah_mist(spoj, pozice_boxu),
-                                               **{i: o for i, o in zmeny.items() if i in pozice_boxu}}
+    Volá se až po zápisu, takže obsah i počet obsazených pozic čte už nový.
+    """
+    obsah_boxu = rozhrani.obsah_mist(spoj, struktura.pozice_v_rozsahu(spoj, "BOX", misto.box_id))
     obsah = obsah_boxu.get(misto.vnitrni_pozice_id)
-    obsazene = sum(1 for o in obsah_boxu.values() if o is not None)
     return StavMista(vnitrni_pozice_id=misto.vnitrni_pozice_id, kod=misto.kod, adresa=misto.adresa,
                      typ_boxu=misto.typ_boxu, dil_id=obsah.dil_id if obsah else None,
                      stav_ks=obsah.pocet_ks if obsah else 0,
-                     stav_boxu=struktura.stav_boxu(misto.box_blokovany, obsazene))
+                     stav_boxu=struktura.stav_boxu(misto.box_blokovany, len(obsah_boxu)))

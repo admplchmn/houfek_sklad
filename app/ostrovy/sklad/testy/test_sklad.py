@@ -1,4 +1,10 @@
-"""Testy ostrova E: čistá pravidla (hotová) a HTTP kontrakt skladových operací nad vzorovými daty."""
+"""Testy ostrova E: čistá pravidla (hotová) a HTTP kontrakt skladových operací nad vzorovými daty.
+
+Zápis i čtení zásoby nad SQL Serverem je v `test_sklad_sql.py`; tady zůstávají pravidla bez DB a
+HTTP testy, které databázi nepotřebují: chyby vstupu (400), chybějící oprávnění (403) a operace,
+které se rozhodnou dřív, než by něco zapsaly. STAT místa a ruční uzavření upozornění jsou KOSTRA
+až do kroku 2, proto se počítají nad vzorovými daty.
+"""
 import re
 import sqlite3
 import unittest
@@ -159,12 +165,7 @@ class TestOperace(ZakladTestuOstrova):
                                                           "&kodRegalu=HOUFEK-PLE-R01")), {"regalId"})
 
     def test_prijem_dyn(self):
-        odpoved = self.post("/prijem-dyn", dilId=14, cilKod="BPLE038-G", pocetKs=20)
-        data = self.over_ok(odpoved)
-        self.assertEqual([(p["typPohybu"], p["mnozstvi"], p["stavPoKs"]) for p in data["pohyby"]],
-                         [("PRIJEM", 20, 20)])
-        self.assertEqual((data["cil"]["stavKs"], data["cil"]["stavBoxu"]), (20, "OBSAZENY"))
-        self.assertIsNotNone(odpoved.json["transakceId"])
+        """Samotný příjem testuje test_sklad_sql.py; tady chyby, které padnou dřív, než se začne zapisovat."""
         self.over_chybu(self.post("/prijem-dyn", dilId=12, cilKod="BPLE038-G", pocetKs=1), 409, "SIZE_MISMATCH")
         self.over_chybu(self.post("/prijem-dyn", dilId=12, cilKod="BPLE037-A", pocetKs=1), 409, "POSITION_OCCUPIED")
         self.over_chybu(self.post("/prijem-dyn", dilId=13, cilKod="BPLE038-G", pocetKs=1), 409, "PART_HAS_NO_SIZE")
@@ -175,33 +176,14 @@ class TestOperace(ZakladTestuOstrova):
                          {"pocetKs"})
 
     def test_rucni_potvrzeni_a_request_id(self):
+        """Dvojí odeslání se stejným requestId (T14) testuje test_sklad_sql.py – potřebuje potvrzená data."""
         self.over_chybu(self.post("/prijem-dyn", dilId=14, cilKod="BPLE038-G", pocetKs=5, zpusobPotvrzeni="RUCNE"),
                         403, "NO_PERMISSION")
-        self.prihlas("SKLAD_PRIJEM", "RUCNI_POTVRZENI")
-        request_id = rid()
-        prvni = self.post("/prijem-dyn", requestId=request_id, dilId=14, cilKod="BPLE038-G", pocetKs=5,
-                          zpusobPotvrzeni="RUCNE").json
-        druhy = self.post("/prijem-dyn", requestId=request_id, dilId=14, cilKod="BPLE038-G", pocetKs=5,
-                          zpusobPotvrzeni="RUCNE").json
-        self.assertEqual((prvni["code"], druhy["transakceId"], druhy["data"]),
-                         ("OK", prvni["transakceId"], prvni["data"]))
         self.assertEqual(self.chybna_pole(self.klient.post("/api/sklad/prijem-dyn", json={
             "dilId": 14, "cilKod": "BPLE038-G", "pocetKs": 5})), {"requestId"})
 
     def test_uskladneni_do_stat(self):
-        odpoved = self.post("/prijem-stat", dilId=14, cilKod="BSTAT037-1", pocetKs=30)
-        data = self.over_ok(odpoved)
-        self.assertEqual((data["pohyby"][0]["stavPredKs"], data["cil"]["stavKs"], data["stavZasoby"]), (12, 42, "OK"))
-        self.assertEqual([v["code"] for v in odpoved.json["varovani"]], ["NAD_MAXIMEM"])     # Q-11
-        z_dyn = self.over_ok(self.post("/prijem-stat", dilId=14, cilKod="BSTAT037-1", pocetKs=3,
-                                       zdrojKod="BPLE038-I"))
-        self.assertEqual([(p["typPohybu"], p["kod"], p["mnozstvi"]) for p in z_dyn["pohyby"]],
-                         [("PRESUN-OUT", "BPLE038-I", -3), ("PRESUN-IN", "BSTAT037-1", 3)])
-        self.assertEqual(z_dyn["zdroj"]["stavKs"], 5)
-        doplneni = self.over_ok(self.post("/prijem-stat", dilId=13, cilKod="BSTAT037-2", pocetKs=10))
-        self.assertEqual((doplneni["stavZasoby"], doplneni["upozorneni"]), ("OK", "UZAVRENO"))
-        castecne = self.over_ok(self.post("/prijem-stat", dilId=13, cilKod="BSTAT037-2", pocetKs=5))
-        self.assertEqual((castecne["stavZasoby"], castecne["upozorneni"]), ("NA_MINIMU", "AKTUALIZOVANO"))
+        """Uskladnění, přičtení i upozornění zásoby testuje test_sklad_sql.py; tady odmítnutí před zápisem."""
         self.over_chybu(self.post("/prijem-stat", dilId=12, cilKod="BSTAT037-1", pocetKs=1), 409, "WRONG_PART")
         self.over_chybu(self.post("/prijem-stat", dilId=14, cilKod="BSTAT037-1", pocetKs=1, zdrojKod="BPLE037-A"),
                         409, "WRONG_PART")
@@ -209,25 +191,14 @@ class TestOperace(ZakladTestuOstrova):
                         409, "INSUFFICIENT_STOCK")
 
     def test_vydej(self):
-        data = self.over_ok(self.post("/vydej", zdrojKod="BSTAT037-1", pocetKs=5))
-        self.assertEqual((data["pohyby"][0]["mnozstvi"], data["stavZasoby"], data["upozorneni"]),
-                         (-5, "POD_MINIMEM", "ZALOZENO"))
-        cely = self.over_ok(self.post("/vydej", zdrojKod="BPLE037-A", pocetKs=30, ocekavanyStavKs=30))
-        self.assertEqual((cely["zdroj"]["stavKs"], cely["zdroj"]["dilId"], cely["zdroj"]["stavBoxu"]),
-                         (0, None, "VOLNY"))
+        """Výdej, vyprázdnění pozice i zásobové stavy testuje test_sklad_sql.py; tady odmítnutí před zápisem."""
         self.over_chybu(self.post("/vydej", zdrojKod="BPLE037-A", pocetKs=1, ocekavanyStavKs=29),
                         409, "CONCURRENT_CHANGE")
         self.over_chybu(self.post("/vydej", zdrojKod="BPLE037-A", pocetKs=31), 409, "INSUFFICIENT_STOCK")
         self.over_chybu(self.post("/vydej", zdrojKod="BSTAT037-2", pocetKs=1), 409, "INSUFFICIENT_STOCK")
 
     def test_presun(self):
-        odpoved = self.post("/presun", zdrojKod="BPLE037-A", cilKod="BPLE039-A")
-        data = self.over_ok(odpoved)
-        self.assertEqual([(p["typPohybu"], p["mnozstvi"]) for p in data["pohyby"]],
-                         [("PRESUN-OUT", -30), ("PRESUN-IN", 30)])
-        self.assertEqual((data["zdroj"]["stavBoxu"], data["cil"]["stavBoxu"]), ("VOLNY", "OBSAZENY"))
-        v_boxu = self.over_ok(self.post("/presun", zdrojKod="BPLE038-I", cilKod="BPLE038-G"))
-        self.assertEqual((v_boxu["zdroj"]["stavBoxu"], v_boxu["cil"]["stavKs"]), ("OBSAZENY", 8))
+        """Přesun celé dávky (dva pohyby, T05) testuje test_sklad_sql.py; tady odmítnutí před zápisem."""
         self.over_chybu(self.post("/presun", zdrojKod="BPLE037-A", cilKod="BPLE039-A", pocetKs=10), 400,
                         "WHOLE_BATCH_ONLY")
         self.over_chybu(self.post("/presun", zdrojKod="BPLE037-A", cilKod="BPLE038-G"), 409, "SIZE_MISMATCH")
@@ -275,8 +246,7 @@ class TestStatMistaAUpozorneni(ZakladTestuOstrova):
         self.assertEqual([v["code"] for v in konec.json["varovani"]], ["UPOZORNENI"])
 
     def test_upozorneni(self):
-        self.assertEqual(self.over_ok(self.klient.get("/api/sklad/upozorneni"))["celkem"], 1)
-        self.assertEqual(self.over_ok(self.klient.get("/api/sklad/upozorneni?stav="))["celkem"], 2)
+        """Výčet upozornění nad SQL Serverem testuje test_sklad_sql.py; ruční uzavření je KOSTRA až krok 2."""
         uzavrene = self.over_ok(self.klient.post("/api/sklad/upozorneni/1/uzavrit", json={"poznamka": "díl ruší"}))
         self.assertEqual((uzavrene["stavUpozorneni"], uzavrene["poznamka"]), ("UZAVRENE", "díl ruší"))
         self.assertIsNotNone(uzavrene["datumUzavreni"])
