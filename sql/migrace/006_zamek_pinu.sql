@@ -10,7 +10,7 @@
       ukládá vždy, UzivatelID a TerminalID se vyplní jen tehdy, když ten který
       řádek existoval. Otevřený PIN se nikde neuchovává.
    3) app_sklad do PrihlaseniPokus jen přidává – DENY UPDATE a DELETE jako u
-      SkladovaTransakce [Δ16], aby pokus zůstal dohledat i po chybě v kódu.
+      SkladovyPohyb a AuditZmen [Δ16], aby pokus zůstal dohledat i po chybě v kódu.
    ============================================================================= */
 
 SET XACT_ABORT ON;
@@ -38,7 +38,6 @@ CREATE TABLE dbo.PrihlaseniPokus (
 );
 GO
 
-/* 3) Historie pokusů se jen zapisuje, proto stejné právo jako u skladových transakcí. */
-DENY   UPDATE ON OBJECT::dbo.PrihlaseniPokus TO app_sklad;
-DENY   DELETE ON OBJECT::dbo.PrihlaseniPokus TO app_sklad;
+/* 3) Historie pokusů se jen zapisuje, proto stejné právo jako u SkladovyPohyb a AuditZmen. */
+DENY   UPDATE, DELETE ON OBJECT::dbo.PrihlaseniPokus TO app_sklad;
 GO
