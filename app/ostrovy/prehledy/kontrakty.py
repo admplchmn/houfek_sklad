@@ -236,7 +236,7 @@ class LaserFiltr(Strankovani):
     material_id: int | None = None
     tloustka_id: int | None = None
     jen_pod_maximem: bool = True
-    odecitat_dyn: bool = False        # otevřený bod kap. 14 / Q-22
+    odecitat_dyn: bool = True         # Q-22 rozhodnuto 9. 11.
 
 
 # --- historie (kap. 9, 17 obrazovka 17) -----------------------------------------------------------------

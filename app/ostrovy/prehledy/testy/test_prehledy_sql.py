@@ -18,7 +18,6 @@ from datetime import date, datetime
 from decimal import Decimal
 
 from app.ostrovy.dily import rozhrani as dily
-from app.ostrovy.dily import sluzby as dily_sluzby
 from app.ostrovy.prehledy import domena, sluzby
 from app.ostrovy.prehledy.kontrakty import (
     HledaniFiltr,
@@ -29,7 +28,6 @@ from app.ostrovy.prehledy.kontrakty import (
 from app.ostrovy.prehledy.sluzby import POCET_POHYBU_NA_KARTE
 from app.ostrovy.struktura import rozhrani as struktura
 from app.platforma.chyby import AppError
-from app.platforma.kontrakty import DuvodVstup
 from app.platforma.typy import Kontext, PotrebaMista
 from tests.integrace.zaklad import ZakladIntegrace
 
@@ -240,13 +238,13 @@ class TestSkenAHledani(ZakladPrehledu):
 
     def test_hledani_nevidi_vyrazeny_dil_karta_ano(self):
         """Vyřazuje ostrov D: hledání i sken pracují jen s aktivními díly, karta ukáže i vyřazený."""
-        # vyřazujeme díl bez umístění – ostrov D nenechá vyřadit díl, na kterém něco leží (NOT_EMPTY)
-        vyrazeneho = self.dil("PREHLED 3")
-        dily_sluzby.deaktivuj_dil.__wrapped__(self.spoj, vyrazeneho, DuvodVstup(duvod="konec výroby"), self.kdo)
+        # rozhraní D vyřazení nenabízí (je jen v endpointu) – test si proto stav nastaví sám
+        dil_id = self.dil("PREHLED 3")
+        self.spoj.proved("UPDATE dbo.Dil SET Aktivni = 0 WHERE DilID = ?", dil_id)
         self.assertEqual([v.id for v in self.hledej(q="PREHLED").polozky],
                          [self.dil_lezici, self.dil_bez_ciselniku])
         self.assertEqual(self.sken("PREHLED 3").polozky, [])
-        self.assertEqual(self.karta(vyrazeneho).identifikacni_cislo, "PREHLED 3")
+        self.assertEqual(self.karta(dil_id).identifikacni_cislo, "PREHLED 3")
         prvni = self.hledej(q="PREHLED").polozky[0]          # výsledek odkazuje na první umístění dílu
         self.assertEqual((prvni.zvyrazneni.vnitrni_pozice_id, prvni.adresa),
                          (self.stat["VnitrniPoziceID"], self.stat["Adresa"]))
@@ -462,13 +460,13 @@ class TestZasobyAZasobovychStavu(ZakladPrehledu):
 
 
 class TestLaser(ZakladPrehledu):
-    """Kap. 14 / T09: díly s maximem ve STAT, první operace LASER, doporučení v obou režimech Q-22."""
+    """T09 (kap. 14): řada S235 / 3 mm – díly s maximem ve STAT, LASER, doporučení v obou režimech Q-22."""
 
-    TLOUSTKA = Decimal("4.00")
+    TLOUSTKA = Decimal("3.00")
 
     def setUp(self) -> None:
         super().setUp()
-        self.tloustka_id = self.tloustky["4.00"]
+        self.tloustka_id = self.tloustky["3.00"]
         self.dil_chybi = self.dil("PREHLED 21", tloustka_mm=self.TLOUSTKA)              # max 40, STAT 12, DYN 8
         self.stat_chybi = self.misto_s_obsahem(self.dil_chybi, typ_boxu="STAT", pocet_ks=12)
         self.prirad_stat(self.dil_chybi, self.stat_chybi["VnitrniPoziceID"], 10, 40)
@@ -484,7 +482,7 @@ class TestLaser(ZakladPrehledu):
         self.prirad_stat(self.dil_bez_maxima, self.stat_bez_maxima["VnitrniPoziceID"], 1)
 
     def laser(self, **filtr):
-        """Laser nemá filtr pracoviště – řadu našich dílů odděluje tloušťka (viz doklad třídy)."""
+        """Laser filtr pracoviště nemá – řadu S235 / 3 mm pro T09 vymezuje tloušťka a materiál."""
         return super().laser(tloustka_id=filtr.pop("tloustka_id", self.tloustka_id), **filtr)
 
     def test_jen_laser_podle_filtru_a_pod_maximem(self):
@@ -502,19 +500,22 @@ class TestLaser(ZakladPrehledu):
                          ["PREHLED 23"])
 
     def test_odecitat_dyn_obdva_rezimy(self):
-        """Q-22: přepínač mění jen doporučený počet, „chybí ve STAT“ je definované zadáním (kap. 14)."""
-        self.assertEqual([(r.chybi_ve_stat_ks, r.doporuceno_ks) for r in self.laser().polozky], [(28, 40)])
+        """Q-22 (rozhodnuto 9. 11.): bez parametru se DYN odečítá; přepínač mění jen doporučený počet."""
+        self.assertEqual([(r.chybi_ve_stat_ks, r.doporuceno_ks) for r in self.laser().polozky], [(28, 20)])
         self.assertEqual([(r.chybi_ve_stat_ks, r.doporuceno_ks) for r in
-                          self.laser(odecitat_dyn=True).polozky], [(28, 20)])
+                          self.laser(odecitat_dyn=False).polozky], [(28, 40)])
 
     def test_radi_se_podle_nejvetsiho_chybeni(self):
         druhy = self.dil("PREHLED 25", tloustka_mm=self.TLOUSTKA, standardni_davka_ks=None)   # max 50, STAT 1
         stat = self.misto_s_obsahem(druhy, typ_boxu="STAT", pocet_ks=1)
         self.prirad_stat(druhy, stat["VnitrniPoziceID"], 1, 50)
-        self.assertEqual([(r.identifikacni_cislo, r.chybi_ve_stat_ks, r.doporuceno_ks) for r in self.laser().polozky],
-                         [("PREHLED 25", 49, 49), ("PREHLED 21", 28, 40)])    # bez dávky se nezaokrouhluje
+        self.assertEqual([(r.identifikacni_cislo, r.chybi_ve_stat_ks, r.doporuceno_ks)
+                          for r in self.laser().polozky],
+                         [("PREHLED 25", 49, 49), ("PREHLED 21", 28, 20)])   # bez dávky se nezaokrouhluje
 
     def test_filtry_materialu_a_tloustky(self):
+        self.assertEqual([r.identifikacni_cislo for r in self.laser(material_id=self.materialy["S235"]).polozky],
+                         ["PREHLED 21"])
         self.assertEqual([r.identifikacni_cislo for r in
                           self.laser(material_id=self.materialy["S355"], tloustka_id=self.tloustka_id,
                                      jen_pod_maximem=False).polozky], ["PREHLED 22"])
