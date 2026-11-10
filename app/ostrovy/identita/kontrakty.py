@@ -1,7 +1,7 @@
 """HTTP kontrakty ostrova B – Identita (sekce 7.2 dokumentu Ostrovy, analýza 9.7, docs/adr/0007).
 
-Kontrakt je hotový (fáze 0); služby zatím vracejí vzorová data (KOSTRA). Po zmrazení na
-bráně K1 se tu jen přidává (P10).
+Kontrakt je hotový (fáze 0); služby běží nad SQL Serverem, bez databáze vrací rozhraní vzorová
+data (`ukazky.py`). Nové pole sem jen přibývá (P10).
 
 - PIN a kód karty jsou jen vstupy (`SecretStr`): v odpovědi, logu ani otisku požadavku se nikdy
   neobjeví; výstup říká jen `maPin` / `maKartu`.
