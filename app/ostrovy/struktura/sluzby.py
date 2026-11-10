@@ -262,18 +262,22 @@ def zaloz_box(spoj: Spojeni, uroven_id: int, vstup: NovyBoxVstup, kdo: Kontext) 
 def vymen_box(spoj: Spojeni, box_id: int, vstup: VymenaBoxuVstup, kdo: Kontext) -> BoxDetail:
     """Nový box na stejné Pozici (PoziceID i pořadí zůstávají); starý prázdný box Aktivni = 0 (Q-04).
 
-    Starý box zůstává dohledat se svým kódem (trvalá identita na štítku); do auditu jde jeho vyřazení,
-    nové číslo boxu se zakládá, tedy neaudituje (kap. 25).
-    Chyby: NOT_FOUND, NOT_EMPTY (obsah nebo STAT přiřazení), ALREADY_EXISTS, BOX_SERIES_FULL.
+    Starý box zůstává dohledat se svým kódem (trvalá identita na štítku); do auditu jde jeho vyřazení
+    a vazba na nový box (`NahrazenBoxem` s kódem nového boxu, D-35). Kód nového boxu je buď ze štítku,
+    nebo je to další číslo řady – jeho vznik se neaudituje (kap. 25).
+    Chyby: NOT_FOUND, NOT_EMPTY (obsah nebo STAT přiřazení), ALREADY_EXISTS (kód ze štítku i vyřazeného
+    boxu), VALIDATION_ERROR (kód nebo číslo), BOX_SERIES_FULL.
     """
     stary = _nacti_box(spoj, box_id)
     zamkni_mista(spoj, _ids_pozic(spoj, box_id))
     _over_prazdny(spoj, stary)
-    kod_boxu = _kod_boxu(spoj, stary["RegalID"], vstup.typ_boxu, vstup.cislo_boxu)
+    kod_boxu = _kod_boxu(spoj, stary["RegalID"], vstup.typ_boxu, vstup.cislo_boxu, vstup.kod_boxu)
     novy_id = repozitar.vymen_box(spoj, stary, vstup.typ_boxu, _kod_cleneni(spoj, vstup.cleneni_id),
                                   vstup.delka_mm, vstup.hloubka_mm, kod_boxu)
+    novy = _nacti_box(spoj, novy_id)
     zapis(spoj, kdo, "BOX", box_id, "Aktivni", True, False, vstup.duvod)
-    return _detail(spoj, _nacti_box(spoj, novy_id))
+    zapis(spoj, kdo, "BOX", box_id, "NahrazenBoxem", None, novy["KodBoxu"], vstup.duvod)
+    return _detail(spoj, novy)
 
 
 @transakce("BOX_PRESUN")

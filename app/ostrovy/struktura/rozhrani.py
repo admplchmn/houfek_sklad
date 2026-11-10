@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
+from app.platforma.audit import zapis
 from app.platforma.chyby import AppError
 from app.platforma.db import Spojeni, po_davkach
 from app.platforma.typy import Kontext, PolozkaCiselniku, PotrebaMista, Rozmer
@@ -430,3 +431,20 @@ def zaloz_box(spoj: Spojeni, kdo: Kontext, uroven_id: int, poradi: int | None, t
     Chyby: ALREADY_EXISTS, NOT_FOUND, VALIDATION_ERROR.
     """
     return repozitar.zaloz_box(spoj, uroven_id, poradi, typ_boxu, kod_cleneni, delka_mm, hloubka_mm, kod_boxu)
+
+
+def zablokuj_box(spoj: Spojeni, kdo: Kontext, box_id: int, duvod: str) -> None:
+    """Zablokuje box – migrate STAV_BOXU BLOK na `Box.Blokovany = 1` (docs/migrace-xlsm.md 2 a 4).
+
+    Totéž co větev BOX ve `sluzby.blokuj`: zámky pozic, UPDATE Blokovany a audit Blokovany
+    False → True s důvodem. Už blokovaný box nic nezapíše; odblokování migrace nepotřebuje.
+    Chyby: NOT_FOUND (box neexistuje nebo je vyřazený).
+    """
+    box = repozitar.box(spoj, box_id)
+    if box is None or not box["Aktivni"]:
+        raise AppError("NOT_FOUND", f"Box {box_id} neexistuje nebo je vyřazený.")
+    zamkni_mista(spoj, [p["VnitrniPoziceID"] for p in repozitar.pozice_boxu(spoj, box_id)])
+    if box["BoxBlokovany"]:
+        return
+    repozitar.nastav_pole(spoj, "Box", box_id, {"Blokovany": True})
+    zapis(spoj, kdo, "BOX", box_id, "Blokovany", False, True, duvod)

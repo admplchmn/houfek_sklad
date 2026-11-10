@@ -231,6 +231,7 @@ class VymenaBoxuVstup(Vstup):
     delka_mm: Mm = Field(..., gt=0)
     hloubka_mm: Mm = Field(..., gt=0)
     cislo_boxu: int | None = Field(None, ge=1, le=999)
+    kod_boxu: Kod | None = None                                     # kód z předtištěného štítku, nepovinný (11.2, D-35)
     duvod: Duvod
 
 

@@ -379,6 +379,36 @@ class TestBlokace(ZakladSluzeb):
         self.over_integrity(self.uroven_id)
 
 
+class TestZablokovaniBoxu(ZakladSluzeb):
+    """Rozhraní pro migraci H: STAV_BOXU BLOK → `Box.Blokovany = 1` (docs/migrace-xlsm.md 2 a 4)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        _, self.regal_id, self.uroven_id, self.kod = self.nova_uroven()
+        self.box_id = self.box(self.uroven_id).box_id
+
+    def zablokuj(self, box_id: int, duvod: str = "vadný díl"):
+        return struktura.zablokuj_box(self.spoj, self.kdo, box_id, duvod)
+
+    def test_zablokovani_se_zapise_jednou(self):
+        self.assertIsNone(self.zablokuj(self.box_id))
+        self.assertEqual(self.spoj.hodnota("SELECT Blokovany FROM dbo.Box WHERE BoxID = ?", self.box_id), True)
+        self.assertEqual(self.audity(self.box_id, "BOX"), [("Blokovany", "False", "True", "vadný díl")])
+        self.assertEqual(self.detail(self.box_id).blokovany, True)
+        self.zablokuj(self.box_id, "podruhé")                     # už blokovaný box nic nezapíše
+        self.assertEqual(self.audity(self.box_id, "BOX"), [("Blokovany", "False", "True", "vadný díl")])
+        self.over_integrity(self.uroven_id)
+
+    def test_neexistujici_a_vyrazeny_box(self):
+        self.assertEqual(self.chyba(self.zablokuj, NEEXISTUJE, kod="NOT_FOUND").kod, "NOT_FOUND")
+        box_id = self.box(self.uroven_id).box_id
+        self.deaktivuj_box(box_id)
+        self.assertEqual(self.chyba(self.zablokuj, box_id, kod="NOT_FOUND").kod, "NOT_FOUND")
+        self.assertEqual(self.spoj.hodnota("SELECT Blokovany FROM dbo.Box WHERE BoxID = ?", box_id), False)
+        self.assertEqual(self.audity(box_id, "BOX"), [("Aktivni", "True", "False", "vyřazen")])  # jen deaktivace
+        self.over_integrity(self.uroven_id)
+
+
 class TestZalozeniBoxu(ZakladSluzeb):
     """Bod 4: založení boxu službou – pořadí na úrovni, vnitřní pozice ze šablony, FullBoxKlic,
     nepovinný kód z předtištěného štítku (D-35)."""
@@ -463,7 +493,8 @@ class TestZalozeniBoxu(ZakladSluzeb):
 
 
 class TestVymenaBoxu(ZakladSluzeb):
-    """Bod 4 a „Hotovo, když“ T22: nový box na stejné pozici, starý vyřazený a dohledatelný."""
+    """Bod 4 a „Hotovo, když“ T22: nový box na stejné pozici, starý vyřazený a dohledatelný;
+    kód nového boxu ze štítku (D-35) i další číslo řady."""
 
     def setUp(self) -> None:
         super().setUp()
@@ -485,8 +516,54 @@ class TestVymenaBoxu(ZakladSluzeb):
         self.assertEqual((stary.box_id, stary.kod_boxu, stary.aktivni, stary.pozice),
                          (self.stary.box_id, self.stary.kod_boxu, False, []))
         self.assertEqual([b.box_id for b in self.boxy(self.uroven_id)], [self.za_radem.box_id, novy.box_id])
-        self.assertEqual(self.audity(self.stary.box_id, "BOX"), [("Aktivni", "True", "False", "prasklý box")])
+        self.assertEqual(self.audity(self.stary.box_id, "BOX"),
+                         [("Aktivni", "True", "False", "prasklý box"),
+                          ("NahrazenBoxem", None, novy.kod_boxu, "prasklý box")])   # vazba starý → nový (D-35)
         self.assertEqual(self.audity(novy.box_id, "BOX"), [])                   # nové číslo se nezakládá (kap. 25)
+        self.over_integrity(self.uroven_id)
+
+    def test_vymena_se_stitkem_noveho_boxu(self):
+        """D-35 (11.2) při výměně: „b… 037 " → B…037, adresu i přihrádky dělá systém, řada pokračuje."""
+        pred = {r["BoxID"]: r for r in self.pozice_urovne(self.uroven_id)}
+        novy = self.vymena(self.stary.box_id, kod_boxu=f" b{self.kod.lower()} 037 ")
+        self.assertEqual((novy.kod_boxu, novy.full_box_klic),
+                         (f"B{self.kod}037", f"HOUFEK-{self.kod}-R01-U01-B{self.kod}037"))
+        self.assertEqual(self.prihradky(novy.box_id), self.ocekavane_prihradky("C4", "DYN", (400, 360)))
+        po = {r["BoxID"]: r for r in self.pozice_urovne(self.uroven_id)}
+        self.assertEqual(po[novy.box_id]["PoziceID"], pred[self.stary.box_id]["PoziceID"])   # stejná Pozice
+        self.assertEqual(novy.poradi, pred[self.stary.box_id]["Poradi"])
+        stary = self.detail(self.stary.box_id)
+        self.assertEqual((stary.kod_boxu, stary.aktivni), (self.stary.kod_boxu, False))      # svůj kód má dál
+        self.assertEqual(self.audity(self.stary.box_id, "BOX"),
+                         [("Aktivni", "True", "False", "prasklý box"),
+                          ("NahrazenBoxem", None, f"B{self.kod}037", "prasklý box")])
+        self.assertEqual(self.box(self.uroven_id).kod_boxu, f"B{self.kod}038")   # 037 je vydán (11.2.1)
+        self.over_integrity(self.uroven_id)
+
+    def test_vymena_se_stitkem_jineho_boxu(self):
+        """Kód už vydaného boxu, i vyřazeného, výměnu zastaví; starý box zůstane aktivní a nic nevznikne."""
+        jina_uroven = self.uroven(self.regal_id, "U02").uroven_id
+        self.box(jina_uroven, kod_boxu=f"B{self.kod}050")
+        self.deaktivuj_box(self.box(jina_uroven, kod_boxu=f"B{self.kod}051").box_id)
+        for stitek in (f" b{self.kod.lower()} 050 ", f"B{self.kod}051"):         # aktivní i vyřazený box
+            chyba = self.chyba(self.vymena, self.stary.box_id, kod="ALREADY_EXISTS", kod_boxu=stitek)
+            self.assertEqual(chyba.kod, "ALREADY_EXISTS", stitek)
+            self.assertEqual(self.detail(self.stary.box_id).aktivni, True, stitek)
+        self.assertEqual(self.spoj.hodnota("SELECT COUNT(*) FROM dbo.Box WHERE PoziceID ="
+                                           " (SELECT PoziceID FROM dbo.Box WHERE BoxID = ?)", self.stary.box_id), 1)
+        self.assertEqual(self.spoj.hodnota("SELECT COUNT(*) FROM dbo.Pozice WHERE UrovenID = ?",
+                                           self.uroven_id), 2)                   # ani nová Pozice
+        self.assertEqual(self.audity(self.stary.box_id, "BOX"), [])
+        self.over_integrity(self.uroven_id, jina_uroven)
+
+    def test_vymena_stitku_a_cisla_se_musi_shodovat(self):
+        """Poslal-li klient kodBoxu i cisloBoxu, musí sedět na stejné číslo (D-35); shoda projde."""
+        chyba = self.chyba(self.vymena, self.stary.box_id, kod="VALIDATION_ERROR",
+                           kod_boxu=f"B{self.kod}043", cislo_boxu=44)
+        self.assertEqual(self.chyby_pole(chyba), {"kodBoxu"})
+        self.assertEqual(self.detail(self.stary.box_id).aktivni, True)
+        shodny = self.vymena(self.stary.box_id, kod_boxu=f"b{self.kod.lower()} 042", cislo_boxu=42)
+        self.assertEqual(shodny.kod_boxu, f"B{self.kod}042")
         self.over_integrity(self.uroven_id)
 
     def test_vymena_neni_pro_obsazeny_box(self):
@@ -712,6 +789,59 @@ class TestDeaktivaceBoxu(ZakladSluzeb):
         self.assertIn(f"statické přiřazení na {self.kod_boxu(stat.box_id)}-{self.kod_pozice(misto)}", chyba.zprava)
         self.assertEqual(self.detail(stat.box_id).aktivni, True)
         self.over_integrity(self.uroven_id)
+
+
+class TestOperaceNadVyrazenymBoxem(ZakladSluzeb):
+    """Vyřazený box zůstává dohledat (detail, T22), ale operace s ním se odmítají.
+
+    Po výměně sdílí starý box `PoziceID` s novým, takže by přesun či vyřazení starého boxu
+    vyřadilo Pozici pod novým aktivním boxem (nález BOX_NA_NEAKTIVNI_POZICI).
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.pracoviste_id, self.regal_id, self.uroven_id, self.kod = self.nova_uroven()
+        self.jina_uroven_id = self.uroven(self.regal_id, "U02").uroven_id
+
+    def _odmitni_operace(self, box_id: int) -> None:
+        """Pět operací BOX_EDIT nad vyřazeným boxem: NOT_FOUND „je vyřazený“, žádný zápis."""
+        for nazev, operace in [("výměna", lambda: self.vymena(box_id)),
+                               ("přesun", lambda: self.presun(box_id, self.jina_uroven_id)),
+                               ("pořadí", lambda: self.poradi(box_id, 1)),
+                               ("rekonfigurace", lambda: self.rekonfigurace(box_id)),
+                               ("deaktivace", lambda: self.deaktivuj_box(box_id))]:
+            chyba = self.chyba(operace, kod="NOT_FOUND")
+            self.assertIn("je vyřazený", chyba.zprava, nazev)
+
+    def test_operace_se_stary_boxem_po_vymene(self):
+        vymeneny = self.box(self.uroven_id)                       # na 1. místě, vyměňovaný
+        zustava = self.box(self.uroven_id)                        # na 2. místě, nesmí se jí nic dotknout
+        pozice_pred = {r["BoxID"]: r["PoziceID"] for r in self.pozice_urovne(self.uroven_id)}
+        novy = self.vymena(vymeneny.box_id)
+
+        self._odmitni_operace(vymeneny.box_id)
+
+        self.assertEqual(self.detail(vymeneny.box_id).aktivni, False)             # detail ho vrací dál
+        self.assertEqual(self.audity(vymeneny.box_id, "BOX"),
+                         [("Aktivni", "True", "False", "prasklý box"),
+                          ("NahrazenBoxem", None, novy.kod_boxu, "prasklý box")])  # žádné další zápisy
+        pozice_po = {r["BoxID"]: r["PoziceID"] for r in self.pozice_urovne(self.uroven_id)}
+        self.assertEqual([pozice_po[b] for b in (novy.box_id, zustava.box_id)],
+                         [pozice_pred[vymeneny.box_id], pozice_pred[zustava.box_id]])   # nový box sedí na své
+        self.assertEqual([b.box_id for b in self.boxy(self.uroven_id)], [novy.box_id, zustava.box_id])
+        self.over_integrity(self.uroven_id, self.jina_uroven_id)
+
+    def test_operace_po_deaktivaci_boxu(self):
+        box = self.box(self.uroven_id)
+        zustava = self.box(self.uroven_id)
+        self.deaktivuj_box(box.box_id)
+
+        self._odmitni_operace(box.box_id)
+
+        self.assertEqual(self.detail(box.box_id).aktivni, False)
+        self.assertEqual(self.audity(box.box_id, "BOX"), [("Aktivni", "True", "False", "vyřazen")])
+        self.assertEqual([b.box_id for b in self.boxy(self.uroven_id)], [zustava.box_id])   # posunuté doleva
+        self.over_integrity(self.uroven_id, self.jina_uroven_id)
 
 
 class TestRozmerC7(ZakladSluzeb):
