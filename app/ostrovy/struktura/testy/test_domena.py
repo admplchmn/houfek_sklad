@@ -190,5 +190,66 @@ class TestSvg(unittest.TestCase):
         self.assertEqual((ch.rel_x, ch.rel_y, ch.rel_sirka, ch.rel_hloubka), (0.0, 0.0, 0.5, 0.5))  # zadní řada vlevo
 
 
+class TestStitky(unittest.TestCase):
+    """Obsah štítků (11.1, 11.2.2, 11.3, D-31): box i vnitřní pozice zvlášť, čárový kód vždy kód místa."""
+
+    @staticmethod
+    def podklady(cleneni: str, *, typ_boxu: str = "DYN", cisla: dict[str, str] | None = None):
+        """Podklad pro každou pozici šablony v pořadí boxu (stejné pořadí vrátí repozitář).
+
+        `cisla` je {kód pozice: číslo dílu} – tak je pozice načte z aktivního STAT přiřazení.
+        """
+        prihradky = next(c for c in ukazky.CLENENI if c.kod_cleneni == cleneni).pozice
+        return [domena.PodkladStitku(p.dyn_kod if typ_boxu == "DYN" else p.stat_kod,
+                                     (cisla or {}).get(p.dyn_kod if typ_boxu == "DYN" else p.stat_kod))
+                for p in prihradky]
+
+    def test_dyn_box_c1(self):
+        """Box s jedinou pozicí má oba štítky – hlavní i poziční (11.3)."""
+        self.assertEqual([(s.typ, s.kod, s.velky_text)
+                          for s in domena.sticky_boxu("BPLE037", "DYN", self.podklady("C1"))],
+                         [("BOX", "BPLE037", None), ("POZICE_DYN", "BPLE037-A", None)])
+
+    def test_dyn_box_c7(self):
+        self.assertEqual([s.kod for s in domena.sticky_boxu("BPLE037", "DYN", self.podklady("C7"))],
+                         ["BPLE037", "BPLE037-R"])
+
+    def test_dyn_box_c4(self):
+        """Hlavní štítek a za ním pozice v pořadí boxu (šablona C4: G, H, CH, I), bez čísla dílu."""
+        stitky = domena.sticky_boxu("BPLE037", "DYN", self.podklady("C4"))
+        self.assertEqual([s.kod for s in stitky],
+                         ["BPLE037", "BPLE037-G", "BPLE037-H", "BPLE037-CH", "BPLE037-I"])
+        self.assertEqual([s.typ for s in stitky], ["BOX"] + ["POZICE_DYN"] * 4)
+        self.assertEqual([s.velky_text for s in stitky], [None] * 5)   # obsah DYN pozice se mění (11.1)
+
+    def test_stat_pozice_s_prirazenim(self):
+        """STAT štítek tiskne číslo dílu z aktivního přiřazení; na DYN pozici se neuplatní (11.1)."""
+        stitky = domena.sticky_boxu("BSTAT037", "STAT", self.podklady("C5", typ_boxu="STAT",
+                                                                     cisla={"2": "12345-678"}))
+        self.assertEqual([(s.typ, s.kod, s.velky_text) for s in stitky],
+                         [("BOX", "BSTAT037", None), ("POZICE_STAT", "BSTAT037-2", "12345-678"),
+                          ("POZICE_STAT", "BSTAT037-1", None)])
+        self.assertEqual([s.velky_text for s in domena.sticky_boxu("BPLE005", "DYN",
+                                                                  self.podklady("C5", cisla={"K": "1234"}))],
+                         [None] * 3)
+
+    def test_stat_pozice_bez_prirazeni(self):
+        """STAT bez aktivního přiřazení se tiskne bez čísla dílu (výklad dispečera, ne rozhodnutí vedoucího)."""
+        self.assertEqual([s.velky_text for s in
+                          domena.sticky_boxu("BSTAT037", "STAT", self.podklady("C6", typ_boxu="STAT"))],
+                         [None] * 7)
+
+    def test_stitek_jde_precist_zpet(self):
+        """Čárový kód obsahuje vždy kód boxu nebo pozice – parser ho přečte zpět na tentýž objekt."""
+        for typ, kod_boxu in (("DYN", "BPLE037"), ("STAT", "BSTAT037")):
+            for cleneni in ukazky.CLENENI:
+                for stitek in domena.sticky_boxu(kod_boxu, typ,
+                                                 self.podklady(cleneni.kod_cleneni, typ_boxu=typ)):
+                    rozlozeny = struktura.rozloz_kod(stitek.kod)
+                    self.assertEqual(rozlozeny.typ, "BOX" if stitek.typ == "BOX" else "POZICE", stitek.kod)
+                    self.assertEqual((rozlozeny.typ_boxu, rozlozeny.kod_boxu), (typ, kod_boxu), stitek.kod)
+                    self.assertEqual(rozlozeny.kod_mista, None if stitek.typ == "BOX" else stitek.kod)
+
+
 if __name__ == "__main__":
     unittest.main()

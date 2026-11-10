@@ -292,6 +292,21 @@ def kody_pozic(spoj: Spojeni, box_id: int, pohled: str) -> list[str]:
     return [r["Kod"] for r in spoj.dotaz(_KODY_POZIC.format(pohled=pohled), box_id)]
 
 
+# Číslo dílu na STAT štítek: přiřazení ostrova E a díl ostrova D – obě cizí data jen z pohledů (P2),
+# najednou pro všechny pozice tisku, aby štítky celé úrovně znamenaly jeden dotaz.
+_CISLA_DILU_STAT = ("SELECT s.VnitrniPoziceID, d.IdentifikacniCislo FROM dbo.v_StatickeMisto AS s"
+                    " JOIN dbo.v_Dil AS d ON d.DilID = s.DilID WHERE s.VnitrniPoziceID IN ({znacky})")
+
+
+def cisla_dilu_stat(spoj: Spojeni, vnitrni_pozice_ids: list[int]) -> dict[int, str]:
+    """{VnitrniPoziceID: IdentifikacniCislo} aktivních statických přiřazení; bez přiřazení pozice chybí."""
+    cisla: dict[int, str] = {}
+    for davka in po_davkach(sorted(set(vnitrni_pozice_ids))):
+        for radek in spoj.dotaz(_CISLA_DILU_STAT.format(znacky=", ".join("?" * len(davka))), *davka):
+            cisla[radek["VnitrniPoziceID"]] = radek["IdentifikacniCislo"]
+    return cisla
+
+
 def ma_obsah(spoj: Spojeni, vnitrni_pozice_id: int) -> bool:
     """Na pozici je zásoba (řádek v_ObsahPozice znamená alespoň 1 ks) – blokuje rozměr C7 (Q-01)."""
     return spoj.jeden("SELECT 1 AS Je FROM dbo.v_ObsahPozice WHERE VnitrniPoziceID = ?",

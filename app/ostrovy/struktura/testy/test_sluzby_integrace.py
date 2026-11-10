@@ -16,8 +16,8 @@ from __future__ import annotations
 import uuid
 from decimal import Decimal
 
+from app.ostrovy.struktura import repozitar, sluzby
 from app.ostrovy.struktura import rozhrani as struktura
-from app.ostrovy.struktura import sluzby
 from app.ostrovy.struktura.kontrakty import (
     BlokaceVstup,
     NovaUrovenVstup,
@@ -37,6 +37,7 @@ from app.ostrovy.struktura.kontrakty import (
     ZmenaUrovneVstup,
 )
 from app.ostrovy.struktura.testy.test_repozitar_integrace import NEEXISTUJE, ZakladStruktury
+from app.ostrovy.struktura.testy.test_stitky import pocet_stranek
 from app.platforma.chyby import AppError
 from app.platforma.kontrakty import DuvodVstup
 from app.platforma.typy import Kontext
@@ -885,3 +886,69 @@ class TestRozmerC7(ZakladSluzeb):
         self.assertEqual(self.detail_pozice(self.misto).rozmer_c7_delka_mm, Decimal(900))
         self.assertEqual(self.audity(self.misto, "VNITRNI_POZICE_BOXU"), [])
         self.over_integrity(self.uroven_id)
+
+
+class TestStitky(ZakladSluzeb):
+    """Štítky (D-31): PDF pro box, celou úroveň i jedinou pozici; vyřazené se netiskne.
+
+    Co je na štítku za text rozhodují jednotkové testy pravidla v `test_domena.TestStitky`;
+    tady jde o to, které štítky služba vybere, kolik jich je a nad čím selže.
+    """
+
+    def pdf(self, **parametry) -> bytes:
+        return sluzby.stitky_pdf.__wrapped__(self.spoj, **parametry)
+
+    def test_box(self):
+        """Hlavní štítek boxu a za ním štítek každé aktivní pozice (C4 = 4 pozice)."""
+        _, _, uroven_id, _ = self.nova_uroven()
+        box = self.box(uroven_id, cleneni="C4")
+        self.assertTrue(self.pdf(box_id=box.box_id).startswith(b"%PDF"))
+        self.assertEqual(pocet_stranek(self.pdf(box_id=box.box_id)), 5)
+
+    def test_uroven(self):
+        """Úroveň tiskne všechny aktivní boxy v pořadí P01…Pn; vyřazený box ani jeho pozice ne."""
+        _, _, uroven_id, _ = self.nova_uroven()
+        prvni = self.box(uroven_id, cleneni="C1")
+        druhy = self.box(uroven_id, cleneni="C4")
+        self.assertEqual(pocet_stranek(self.pdf(uroven_id=uroven_id)), 2 + 5)
+        self.deaktivuj_box(druhy.box_id)
+        self.assertEqual(pocet_stranek(self.pdf(uroven_id=uroven_id)), 2)
+        self.chyba(self.pdf, box_id=druhy.box_id, kod="NOT_FOUND")
+        self.assertEqual(pocet_stranek(self.pdf(box_id=prvni.box_id)), 2)
+
+    def test_vyrazena_pozice_se_netiskne(self):
+        """Po rekonfiguraci zůstanou štítky nových pozic (stará místa jsou vyřazená) – C2 = 2 pozice."""
+        _, _, uroven_id, _ = self.nova_uroven()
+        box = self.box(uroven_id, cleneni="C4")
+        self.rekonfigurace(box.box_id, cleneni="C2")
+        self.assertEqual(pocet_stranek(self.pdf(box_id=box.box_id)), 3)
+
+    def test_pretisk_jedne_pozice(self):
+        """Přetisk STAT pozice po změně přiřazení (11.1): jediná stránka, i s číslem dílu."""
+        _, _, uroven_id, _ = self.nova_uroven()
+        box = self.box(uroven_id, cleneni="C1", typ_boxu="STAT")
+        misto = self.vloz_pristazeni(box.box_id)
+        self.assertEqual(pocet_stranek(self.pdf(vnitrni_pozice_id=misto)), 1)
+
+    def test_právě_jeden_parametr(self):
+        self.chyba(self.pdf, kod="VALIDATION_ERROR")
+        self.chyba(self.pdf, box_id=1, uroven_id=2, kod="VALIDATION_ERROR")
+        self.chyba(self.pdf, vnitrni_pozice_id=1, box_id=1, kod="VALIDATION_ERROR")
+
+    def test_neexistujici_objekty(self):
+        self.chyba(self.pdf, box_id=NEEXISTUJE, kod="NOT_FOUND")
+        self.chyba(self.pdf, uroven_id=NEEXISTUJE, kod="NOT_FOUND")
+        self.chyba(self.pdf, vnitrni_pozice_id=NEEXISTUJE, kod="NOT_FOUND")
+
+    def test_cislo_dilu_stat(self):
+        """Číslo dílu pro štítek: přiřazení (ostrov E) a díl (ostrov D) jedním dotazem přes pohledy."""
+        _, _, uroven_id, _ = self.nova_uroven()
+        box = self.box(uroven_id, cleneni="C4")
+        misto, bez_pristazeni = self.vloz_pristazeni(box.box_id), self.ids_boxu(box.box_id)[1]
+        cislo = self.spoj.hodnota("SELECT d.IdentifikacniCislo FROM dbo.Dil AS d"
+                                  " JOIN dbo.StatickeUmisteniDilu AS s ON s.DilID = d.DilID"
+                                  " WHERE s.VnitrniPoziceID = ?", misto)
+        self.assertTrue(cislo)
+        self.assertEqual(repozitar.cisla_dilu_stat(self.spoj, [misto, bez_pristazeni]), {misto: cislo})
+        self.assertEqual(repozitar.cisla_dilu_stat(self.spoj, [bez_pristazeni]), {})
+        self.assertEqual(repozitar.cisla_dilu_stat(self.spoj, []), {})
