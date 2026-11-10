@@ -4,8 +4,9 @@ Služby se volí přes `__wrapped__`, tedy bez dekorátoru: tělo běží ve spo
 konci se vše vrátí zpět (@transakce si otevírá vlastní spojení a potvrzuje). Jedině
 `TestOpakovanyRequest` pouští službu i s dekorátorem – ten potřebuje potvrzená data (T14).
 
-Strukturu zakládáme rozhraním ostrova C a díly rozhraním ostrova D (P2); STAT přiřazení vkládá test
-přímo do tabulky, protože `rozhrani.prirad_stat_misto` je až na kroku 2. Každý test má pracoviště s
+Strukturu zakládáme rozhraním ostrova C a díly rozhraním ostrova D (P2); STAT místa zakládá služba
+(`zaloz_stat`), `prirad_stat` je rychlé vložení přímo do tabulky pro testy, ve kterých nezáleží na
+jeho auditu. Každý test má pracoviště s
 jedinečným kódem: potvrzená data i data ostatních ostrovů v databázi zůstávají, proto netvrdíme nic
 o počtech řádků obecně a kontrolu integrity vyhodnocujeme jen pro nálezy, které se týkají našich dat.
 """
@@ -20,15 +21,19 @@ from app.ostrovy.sklad import rozhrani as sklad
 from app.ostrovy.sklad import sluzby
 from app.ostrovy.sklad.kontrakty import (
     KandidatiFiltr,
+    NoveStatMistoVstup,
     PresunVstup,
     PrijemDynVstup,
     PrijemStatVstup,
     UpozorneniFiltr,
+    UzavreniUpozorneniVstup,
     VydejVstup,
+    ZmenaStatMistaVstup,
 )
 from app.ostrovy.struktura import rozhrani as struktura
 from app.platforma.chyby import AppError
 from app.platforma.db import Spojeni, spojeni_pro_skript
+from app.platforma.kontrakty import DuvodVstup
 from app.platforma.typy import Kontext, PotrebaMista
 from tests.integrace.zaklad import ZakladIntegrace
 
@@ -92,10 +97,29 @@ class ZakladSkladu(ZakladIntegrace):
 
     def prirad_stat(self, dil_id: int, misto: struktura.MistoInfo, *, minimalni_ks: int = 0,
                     maximalni_ks: int | None = None) -> int:
-        """Přiřazení STAT místa vložené přímo do tabulky – `prirad_stat_misto` založí až krok 2."""
+        """Přiřazení vložené přímo do tabulky – testy STAT míst používají službu `zaloz_stat`."""
         return self.spoj.vloz("INSERT INTO dbo.StatickeUmisteniDilu (DilID, VnitrniPoziceID, MinimalniPocetKs,"
                               " MaximalniPocetKs) VALUES (?, ?, ?, ?)", dil_id, misto.vnitrni_pozice_id,
                               minimalni_ks, maximalni_ks)
+
+    def zaloz_stat(self, dil_id: int, misto: struktura.MistoInfo, *, minimalni_ks: int = 0,
+                   maximalni_ks: int | None = None, prepsat_velikost: bool = False,
+                   duvod: str | None = None, kdo: Kontext | None = None):
+        """STAT místo založené službou `sluzby.zaloz_stat_misto` (v transakci testu, bez dekorátoru)."""
+        return sluzby.zaloz_stat_misto.__wrapped__(self.spoj, NoveStatMistoVstup(
+            dil_id=dil_id, vnitrni_pozice_id=misto.vnitrni_pozice_id, minimalni_ks=minimalni_ks,
+            maximalni_ks=maximalni_ks, prepsat_velikost=prepsat_velikost, duvod=duvod), kdo or self.kdo)
+
+    def zmen_stat(self, stat_id: int, duvod: str, **mez):
+        return sluzby.zmen_stat_misto.__wrapped__(self.spoj, stat_id, ZmenaStatMistaVstup(**mez, duvod=duvod),
+                                                  self.kdo)
+
+    def ukonci_stat(self, stat_id: int, duvod: str):
+        return sluzby.ukonci_stat_misto.__wrapped__(self.spoj, stat_id, DuvodVstup(duvod=duvod), self.kdo)
+
+    def uzavri_upozorneni(self, upozorneni_id: int, poznamka: str, kdo: Kontext | None = None):
+        return sluzby.uzavri_upozorneni.__wrapped__(self.spoj, upozorneni_id,
+                                                    UzavreniUpozorneniVstup(poznamka=poznamka), kdo or self.kdo)
 
     def blokuj(self, misto: struktura.MistoInfo, *, box: bool = False) -> None:
         tabulka, sloupec = ("dbo.Box", "BoxID") if box else ("dbo.VnitrniPoziceBoxu", "VnitrniPoziceID")
@@ -104,13 +128,23 @@ class ZakladSkladu(ZakladIntegrace):
 
     # --- příkazy (bez dekorátoru, tedy v transakci testu) ---------------------------------------
 
-    def prikaz(self, funkce, vstup):
+    def _hlavicka(self, operace: str) -> None:
         """Hlavičku SkladovaTransakce jinak zakládá @transakce; bez ní by pohyb padl na cizí klíč."""
         self.spoj.transakce_id = uuid.uuid4()
         self.spoj.proved("INSERT INTO dbo.SkladovaTransakce (TransakceID, KlientRequestID, TypOperace,"
-                         " UzivatelID) VALUES (?, ?, ?, ?)", self.spoj.transakce_id, uuid.uuid4(),
-                         funkce.__houfek_transakce__, self.kdo.uzivatel_id)
+                         " UzivatelID) VALUES (?, ?, ?, ?)", self.spoj.transakce_id, uuid.uuid4(), operace,
+                         self.kdo.uzivatel_id)
+
+    def prikaz(self, funkce, vstup):
+        self._hlavicka(funkce.__houfek_transakce__)
         return funkce.__wrapped__(self.spoj, vstup=vstup, kdo=self.kdo)
+
+    def korekce(self, misto: struktura.MistoInfo, dil_id: int, novy_stav_ks: int, typ_pohybu: str = "KOREKCE",
+                poznamka: str | None = None):
+        """Korekci volá jiný ostrov ve své transakci a se zamčenou pozicí – tady bez @transakce."""
+        self._hlavicka(typ_pohybu)
+        return sklad.zauctuj_korekci(self.spoj, self.kdo, misto.vnitrni_pozice_id, dil_id, novy_stav_ks, typ_pohybu,
+                                     poznamka)
 
     def prijem(self, misto: struktura.MistoInfo, dil_id: int, pocet_ks: int = 10, **pole):
         return self.prikaz(sluzby.prijem_dyn, PrijemDynVstup(request_id=uuid.uuid4(), dil_id=dil_id,
@@ -144,7 +178,8 @@ class ZakladSkladu(ZakladIntegrace):
         """Hýbání na pozicích – v historii zůstávají i po smazání řádku ObsahPozice."""
         znacky = ", ".join("?" for _ in mista)
         return self.spoj.dotaz(f"SELECT p.PohybID, t.KodPohybu, p.DilID, p.VnitrniPoziceID, p.Mnozstvi,"
-                               f" p.StavPred, p.StavPo, p.TransakceID, p.UzivatelID, p.Poznamka, p.DatumCas"
+                               f" p.StavPred, p.StavPo, p.TransakceID, p.UzivatelID, p.Poznamka, p.DatumCas,"
+                               f" p.ZpusobPotvrzeni"
                                f" FROM dbo.SkladovyPohyb AS p"
                                f" JOIN dbo.TypPohybu AS t ON t.TypPohybuID = p.TypPohybuID"
                                f" WHERE p.VnitrniPoziceID IN ({znacky}) ORDER BY p.PohybID",
@@ -157,8 +192,13 @@ class ZakladSkladu(ZakladIntegrace):
 
     def upozorneni(self, stat_umisteni_id: int) -> list[dict]:
         return self.spoj.dotaz("SELECT UpozorneniID, TypStavu, StavUpozorneni, AktualniPocetKs, MinimalniPocetKs,"
-                               " DatumUzavreni, UzavrelUzivatelID FROM dbo.UpozorneniZasoby"
+                               " DatumUzavreni, UzavrelUzivatelID, Poznamka FROM dbo.UpozorneniZasoby"
                                " WHERE StatickeUmisteniID = ? ORDER BY UpozorneniID", stat_umisteni_id)
+
+    def audit(self, typ_objektu: str, objekt_id: int) -> list[dict]:
+        """Změny jednoho objektu v AuditZmen (tabulku vlastní Platforma, test ji čte přímo)."""
+        return self.spoj.dotaz("SELECT Pole, StaraHodnota, NovaHodnota, Poznamka, UzivatelID FROM dbo.AuditZmen"
+                               " WHERE TypObjektu = ? AND ObjektID = ? ORDER BY AuditID", typ_objektu, objekt_id)
 
     def over_integrity(self) -> None:
         """v_KontrolaIntegrity nesmí hlásit nic, co se týká našich boxů, úrovní, pozic a dílů.
@@ -532,15 +572,21 @@ class TestSeznamUpozorneni(ZakladSkladu):
 
 
 class TestHistorieACelistvi(ZakladSkladu):
-    """T32: součet pohybů na pozici sedí na její obsah; kontrola integrity je za našich dat čistá."""
+    """T32: součet pohybů na pozici sedí na její obsah; kontrola integrity je za našich dat čistá.
+
+    Běh obsahuje skladové příkazy, STAT místo ze služby, korekci i ruční uzavření upozornění,
+    takže prověří najednou všechny zápisové cesty ostrova.
+    """
 
     def test_beh_skladem(self):
         dil_id, _ = self.dil()
-        self.prirad_stat(dil_id, self.stat[0], minimalni_ks=5)
+        stat_id = self.zaloz_stat(dil_id, self.stat[0], minimalni_ks=25).stat_umisteni_id
         self.prijem(self.dyn[0], dil_id, 20, poznamka="příjem z výroby")
         self.presun(self.dyn[0], self.dyn[1])
         self.uskladni(self.stat[0], dil_id, 20, zdroj_kod=self.dyn[1].kod)
         self.vydej(self.stat[0], 2)
+        self.korekce(self.dyn[2], dil_id, 7, "POCAT-STAV")
+        self.uzavri_upozorneni(self.upozorneni(stat_id)[0]["UpozorneniID"], "doplňuje se průběžně")
         for misto in self.pozice:
             stav = self.obsah(misto)
             self.assertEqual(self.soucet_pohybu(misto), stav[1] if stav else 0, misto.kod)   # T32
@@ -553,6 +599,312 @@ class TestHistorieACelistvi(ZakladSkladu):
         self.assertEqual(self.obsah(self.dyn[1]), None)
         self.assertEqual(self.obsah(self.stat[0]), (dil_id, 18))
         self.over_integrity()
+
+
+class TestStatMistaZalozeni(ZakladSkladu):
+    """Bod 1: služba založí STAT místo, pohlídá jedno místo na díl (Q-12) a volnost pozice, zapíše audit."""
+
+    def test_zalozeni_zapise_prirazeni_a_audit(self):
+        dil_id, _ = self.dil()
+        radek = self.zaloz_stat(dil_id, self.stat[0], minimalni_ks=5, maximalni_ks=20, duvod="nový díl na lince")
+        self.assertGreater(radek.stat_umisteni_id, 0)                      # IDENTITY, ne vzorové NOVE_ID
+        self.assertEqual((radek.dil_id, radek.kod, radek.aktivni), (dil_id, self.stat[0].kod, True))
+        self.assertEqual((radek.minimalni_ks, radek.maximalni_ks, radek.stav_ks, radek.stav_zasoby),
+                         (5, 20, 0, "VYCERPANO"))
+        mista = sklad.stat_mista(self.spoj, dil_ids=[dil_id])
+        self.assertEqual([(m.stat_umisteni_id, m.vnitrni_pozice_id, m.minimalni_ks, m.maximalni_ks) for m in mista],
+                         [(radek.stat_umisteni_id, self.stat[0].vnitrni_pozice_id, 5, 20)])
+        self.assertEqual([(a["Pole"], a["StaraHodnota"], a["NovaHodnota"], a["Poznamka"], a["UzivatelID"])
+                          for a in self.audit("STAT_UMISTENI", radek.stat_umisteni_id)],
+                         [("DilID", None, str(dil_id), "nový díl na lince", self.kdo.uzivatel_id)])
+        self.assertEqual(self.upozorneni(radek.stat_umisteni_id), [])   # při založení se upozornění nezakládá
+
+    def test_druhe_misto_tehoz_dilu_a_obsazena_pozice(self):
+        dil_id, _ = self.dil()
+        druhy_dil, _ = self.dil()
+        self.zaloz_stat(dil_id, self.stat[0])
+        self.chyba(self.zaloz_stat, dil_id, self.stat[1], kod="ALREADY_EXISTS")     # Q-12: nejvýš jedno místo
+        self.chyba(self.zaloz_stat, druhy_dil, self.stat[0], kod="ALREADY_EXISTS")  # pozice už je přiřazená
+        self.assertEqual(len(sklad.stat_mista(self.spoj, dil_ids=[dil_id])), 1)
+        self.assertEqual(self.obsah(self.stat[0]), None)                            # ani obsah se nezměnil
+
+    def test_odmitne_pozici_mimo_stat_chybejici_data_a_spatne_meze(self):
+        dil_id, _ = self.dil()
+        self.chyba(self.zaloz_stat, dil_id, self.dyn[0], kod="VALIDATION_ERROR")            # ne STAT pozice
+        self.chyba(self.zaloz_stat, dil_id, self.stat[0], minimalni_ks=30, maximalni_ks=20,
+                   kod="VALIDATION_ERROR")                                                  # max < min
+        self.chyba(self.zaloz_stat, 2_000_000_000, self.stat[0], kod="NOT_FOUND")           # neznámý díl
+        self.chyba(sluzby.zaloz_stat_misto.__wrapped__, self.spoj, NoveStatMistoVstup(
+            dil_id=dil_id, vnitrni_pozice_id=2_000_000_000, minimalni_ks=0), self.kdo, kod="NOT_FOUND")
+        self.assertEqual(sklad.stat_mista(self.spoj, vnitrni_pozice_ids=[m.vnitrni_pozice_id for m in self.stat]), [])
+
+    def test_dil_bez_velikosti_se_na_stat_pozici_priradi(self):
+        """Q-26: díl bez velikosti se do STAT přiřadit smí – jde o aktivní přiřazení, ne o DYN pozici."""
+        bez_velikosti, _ = self.dil(None)
+        radek = self.zaloz_stat(bez_velikosti, self.stat[0], minimalni_ks=1)
+        self.assertEqual(sklad.stat_mista(self.spoj, dil_ids=[bez_velikosti])[0].stat_umisteni_id,
+                         radek.stat_umisteni_id)
+
+
+class TestRozhraniPriradStatMisto(ZakladSkladu):
+    """Migrační cesta `rozhrani.prirad_stat_misto`: stejné kontroly, ale přepsání velikosti nikdy."""
+
+    def test_priradi_se_shodnou_velikosti_a_odmitne_jinou(self):
+        dil_id, _ = self.dil()
+        stat_id = sklad.prirad_stat_misto(self.spoj, self.kdo, dil_id, self.stat[0].vnitrni_pozice_id, 3, None, 30)
+        self.assertEqual([(a["Pole"], a["NovaHodnota"], a["Poznamka"])
+                          for a in self.audit("STAT_UMISTENI", stat_id)], [("DilID", str(dil_id), None)])
+        self.assertEqual(sklad.stat_mista(self.spoj, dil_ids=[dil_id])[0].stat_umisteni_id, stat_id)
+        mala, _ = self.dil("V1")
+        self.chyba(sklad.prirad_stat_misto, self.spoj, self.kdo, mala, self.stat[1].vnitrni_pozice_id, 0, None, None,
+                   kod="SIZE_MISMATCH")
+        self.chyba(sklad.prirad_stat_misto, self.spoj, self.kdo, dil_id, self.stat[2].vnitrni_pozice_id, 0, None,
+                   None, kod="ALREADY_EXISTS")                       # ten samý díl podruhé (Q-12)
+
+
+class TestPrepsatVelikost(ZakladSkladu):
+    """Q-05: jiná velikost na STAT pozici jen vědomé přepsání – TECH/ADMIN s důvodem, důvod jde do auditu."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.dil_id, self.cislo = self.dil("V1")      # STAT box C4 má přihrádky V3
+
+    def test_operater_prepsani_nesmí_a_technolog_bez_duvodu(self):
+        self.chyba(self.zaloz_stat, self.dil_id, self.stat[0], prepsat_velikost=True, duvod="vejde se",
+                   kdo=Kontext(self.kdo.uzivatel_id, None, "SKL", frozenset()), kod="NO_PERMISSION")
+        self.chyba(self.zaloz_stat, self.dil_id, self.stat[0], prepsat_velikost=True,
+                   kdo=Kontext(self.kdo.uzivatel_id, None, "TECH", frozenset()), kod="VALIDATION_ERROR")
+        self.assertEqual(sklad.stat_mista(self.spoj, vnitrni_pozice_ids=[self.stat[0].vnitrni_pozice_id]), [])
+
+    def test_technolog_s_duvodem_prepsani_zapise(self):
+        radek = self.zaloz_stat(self.dil_id, self.stat[0], prepsat_velikost=True, duvod="křížová příprava V1/V3",
+                                kdo=Kontext(self.kdo.uzivatel_id, None, "TECH", frozenset()))
+        self.assertEqual(radek.kod, self.stat[0].kod)
+        self.assertEqual([(a["Pole"], a["StaraHodnota"], a["NovaHodnota"], a["Poznamka"])
+                          for a in self.audit("STAT_UMISTENI", radek.stat_umisteni_id)],
+                         [("DilID", None, str(self.dil_id), "křížová příprava V1/V3"),
+                          ("VelikostPoziceID", "V3", "V1", "křížová příprava V1/V3")])
+        # přepsaná velikost je v kontrole integrity hlášená výslovně (Q-05: „ověřte důvod v auditu“),
+        # proto tenhle test volá jen nálezy za svým dílem – `over_integrity()` by čekal čistý list
+        self.assertEqual([n["Kontrola"] for n in self.spoj.dotaz(
+            "SELECT Kontrola FROM dbo.v_KontrolaIntegrity WHERE Popis LIKE ?", f"%{self.cislo}%")],
+                         ["STAT_VELIKOST_PREPSANA"])
+
+
+class TestZmenaStatMista(ZakladSkladu):
+    """Bod 2: změna mezí píše audit měněných polí a přehodnotí upozornění zásoby stejnými pravidly (5.8)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.dil_id, _ = self.dil()
+        self.stat_id = self.zaloz_stat(self.dil_id, self.stat[0], minimalni_ks=5, maximalni_ks=40).stat_umisteni_id
+        self.uskladni(self.stat[0], self.dil_id, 8)
+
+    def test_zvysseni_minima_zalozi_upozorneni(self):
+        radek = self.zmen_stat(self.stat_id, "vyšší spotřeba", minimalni_ks=15)
+        self.assertEqual((radek.minimalni_ks, radek.maximalni_ks, radek.stav_ks, radek.stav_zasoby),
+                         (15, 40, 8, "POD_MINIMEM"))
+        self.assertEqual([v.kod for v in radek.varovani], ["UPOZORNENI"])
+        self.assertEqual([(r["TypStavu"], r["StavUpozorneni"], r["AktualniPocetKs"], r["MinimalniPocetKs"])
+                          for r in self.upozorneni(self.stat_id)], [("POD_MINIMEM", "OTEVRENE", 8, 15)])
+        self.assertEqual([(a["Pole"], a["StaraHodnota"], a["NovaHodnota"], a["Poznamka"])
+                          for a in self.audit("STAT_UMISTENI", self.stat_id)],
+                         [("DilID", None, str(self.dil_id), None),
+                          ("MinimalniPocetKs", "5", "15", "vyšší spotřeba")])
+
+    def test_snizeni_minima_upozorneni_uzavre(self):
+        self.zmen_stat(self.stat_id, "vyšší spotřeba", minimalni_ks=20)
+        self.assertEqual([r["StavUpozorneni"] for r in self.upozorneni(self.stat_id)], ["OTEVRENE"])
+        radek = self.zmen_stat(self.stat_id, "oprava minima", minimalni_ks=5)
+        self.assertEqual((radek.stav_ks, radek.stav_zasoby), (8, "OK"))
+        uzavrene = self.upozorneni(self.stat_id)[0]
+        self.assertEqual(uzavrene["StavUpozorneni"], "UZAVRENE")
+        self.assertIsNotNone(uzavrene["DatumUzavreni"])
+        self.assertEqual(uzavrene["UzavrelUzivatelID"], self.kdo.uzivatel_id)
+        self.assertEqual(self.zmen_stat(self.stat_id, "stejné minimum", minimalni_ks=5).varovani, ())
+
+    def test_zmeni_se_jen_poslana_pole(self):
+        radek = self.zmen_stat(self.stat_id, "optimum a žádné maximum", optimalni_ks=20, maximalni_ks=None)
+        self.assertEqual((radek.minimalni_ks, radek.optimalni_ks, radek.maximalni_ks), (5, 20, None))
+        self.assertEqual(radek.varovani, ())                                      # na stavu se nic nezměnilo
+        self.assertEqual([(a["Pole"], a["StaraHodnota"], a["NovaHodnota"]) for a in self.audit("STAT_UMISTENI",
+                                                                                               self.stat_id)],
+                         [("DilID", None, str(self.dil_id)), ("OptimalniPocetKs", None, "20"),
+                          ("MaximalniPocetKs", "40", None)])
+
+    def test_meze_v_rozporu_se_nezapijou(self):
+        self.chyba(self.zmen_stat, self.stat_id, "kaukaz", minimalni_ks=50, kod="VALIDATION_ERROR")
+        self.assertEqual(self.spoj.hodnota("SELECT MinimalniPocetKs FROM dbo.StatickeUmisteniDilu"
+                                           " WHERE StatickeUmisteniID = ?", self.stat_id), 5)
+        self.assertEqual([a["Pole"] for a in self.audit("STAT_UMISTENI", self.stat_id)], ["DilID"])
+        self.assertEqual(self.upozorneni(self.stat_id), [])
+
+
+class TestUkonceniStatMista(ZakladSkladu):
+    """Bod 3: přiřazení se ukončí jen u prázdné pozice; audit s důvodem, otevřené upozornění i s poznámkou."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.dil_id, _ = self.dil()
+        self.stat_id = self.zaloz_stat(self.dil_id, self.stat[0], minimalni_ks=5).stat_umisteni_id
+
+    def test_obsazenou_pozici_ukoncit_nejde(self):
+        self.uskladni(self.stat[0], self.dil_id, 4)
+        self.chyba(self.ukonci_stat, self.stat_id, "přestavba regálu", kod="NOT_EMPTY")
+        self.assertEqual(self.spoj.hodnota("SELECT Aktivni FROM dbo.StatickeUmisteniDilu"
+                                           " WHERE StatickeUmisteniID = ?", self.stat_id), True)
+        self.assertEqual([a["Pole"] for a in self.audit("STAT_UMISTENI", self.stat_id)], ["DilID"])
+
+    def test_ukonceni_prazdne_pozice_uzavre_upozorneni(self):
+        self.uskladni(self.stat[0], self.dil_id, 12)
+        self.vydej(self.stat[0], 12)                                        # 0 ks → VYCERPANO, otevřené
+        radek = self.ukonci_stat(self.stat_id, "díl se nevyrábí")
+        self.assertFalse(radek.aktivni)
+        self.assertEqual([v.kod for v in radek.varovani], ["UPOZORNENI"])
+        self.assertEqual(self.spoj.hodnota("SELECT Aktivni FROM dbo.StatickeUmisteniDilu"
+                                           " WHERE StatickeUmisteniID = ?", self.stat_id), False)
+        self.assertEqual(sklad.stat_mista(self.spoj, dil_ids=[self.dil_id]), [])
+        upozorneni = self.upozorneni(self.stat_id)[0]
+        self.assertEqual((upozorneni["StavUpozorneni"], upozorneni["Poznamka"], upozorneni["UzavrelUzivatelID"]),
+                         ("UZAVRENE", "díl se nevyrábí", self.kdo.uzivatel_id))
+        self.assertEqual([(a["Pole"], a["StaraHodnota"], a["NovaHodnota"], a["Poznamka"])
+                          for a in self.audit("STAT_UMISTENI", self.stat_id)][-1],
+                         ("Aktivni", "True", "False", "díl se nevyrábí"))
+        self.chyba(self.ukonci_stat, self.stat_id, "podruhé", kod="NOT_FOUND")   # aktivní místo už není
+
+    def test_ukonceni_bez_upozorneni_bez_varovani(self):
+        radek = self.ukonci_stat(self.stat_id, "omylem přiřazený díl")
+        self.assertEqual((radek.aktivni, radek.varovani), (False, ()))
+        self.assertEqual(self.upozorneni(self.stat_id), [])
+
+
+class TestRucniUzavreniUpozorneni(ZakladSkladu):
+    """Bod 4: ruční uzavření nad databází – poznámka, kdo zavřel; podruhé CONCURRENT_CHANGE, netrefené NOT_FOUND."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.dil_id, self.cislo = self.dil()
+        self.stat_id = self.prirad_stat(self.dil_id, self.stat[0], minimalni_ks=10)
+        self.uskladni(self.stat[0], self.dil_id, 12)
+        self.vydej(self.stat[0], 8)                                                     # 4 ks → POD_MINIMEM
+        self.id_upozorneni = self.upozorneni(self.stat_id)[0]["UpozorneniID"]
+
+    def test_uzavreni_zapise_uzivatele_a_poznamku(self):
+        radek = self.uzavri_upozorneni(self.id_upozorneni, "díl vyrábíme jiným postupem")
+        self.assertEqual((radek.upozorneni_id, radek.stav_upozorneni, radek.poznamka, radek.typ_stavu),
+                         (self.id_upozorneni, "UZAVRENE", "díl vyrábíme jiným postupem", "POD_MINIMEM"))
+        self.assertEqual((radek.identifikacni_cislo, radek.kod, radek.minimalni_pocet_ks),
+                         (self.cislo, self.stat[0].kod, 10))
+        self.assertIsNotNone(radek.datum_uzavreni)
+        z_databaze = self.upozorneni(self.stat_id)[0]
+        self.assertEqual((z_databaze["StavUpozorneni"], z_databaze["UzavrelUzivatelID"], z_databaze["Poznamka"]),
+                         ("UZAVRENE", self.kdo.uzivatel_id, "díl vyrábíme jiným postupem"))
+        self.assertEqual(sluzby.seznam_upozorneni.__wrapped__(self.spoj, UpozorneniFiltr(dil_id=self.dil_id)).polozky,
+                         [])                                                             # otevřená nezbývají
+
+    def test_druhe_uzavreni_a_neexistujici_upozorneni(self):
+        self.uzavri_upozorneni(self.id_upozorneni, "díl rušíme")
+        self.chyba(self.uzavri_upozorneni, self.id_upozorneni, "podruhé", kod="CONCURRENT_CHANGE")
+        self.chyba(self.uzavri_upozorneni, 2_000_000_000, "nic takového", kod="NOT_FOUND")
+        self.assertEqual(self.upozorneni(self.stat_id)[0]["Poznamka"], "díl rušíme")      # odmítnutí nic nepřepíše
+
+
+class TestKorekce(ZakladSkladu):
+    """Bod 5: `zauctuj_korekci` nastaví stav pozice a zapíše rozdíl jako pohyb (volá ho ostrov F)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.dil_id, _ = self.dil()
+        self.stat_id = self.prirad_stat(self.dil_id, self.stat[0], minimalni_ks=10)
+
+    def test_korekce_zvysi_stav_a_prehodnoti_upozorneni(self):
+        self.uskladni(self.stat[0], self.dil_id, 4)
+        self.assertEqual(self.upozorneni(self.stat_id)[0]["TypStavu"], "POD_MINIMEM")
+        korekce = self.korekce(self.stat[0], self.dil_id, 12, "INVENTURA", "inventurní stav 12 ks")
+        self.assertEqual((korekce.typ_pohybu, korekce.mnozstvi, korekce.stav_pred_ks, korekce.stav_po_ks),
+                         ("INVENTURA", 8, 4, 12))
+        self.assertEqual(korekce.transakce_id, self.spoj.transakce_id)      # pohyb patří do transakce volajícího
+        self.assertEqual(self.obsah(self.stat[0]), (self.dil_id, 12))
+        self.assertEqual([(r["KodPohybu"], r["Mnozstvi"], r["StavPred"], r["StavPo"], r["Poznamka"],
+                           r["ZpusobPotvrzeni"]) for r in self.pohyby(self.stat[0])][-1],
+                         ("INVENTURA", 8, 4, 12, "inventurní stav 12 ks", None))
+        self.assertEqual([(r["StavUpozorneni"], r["TypStavu"]) for r in self.upozorneni(self.stat_id)],
+                         [("UZAVRENE", "POD_MINIMEM")])                                   # nad minimem (5.8)
+
+    def test_korekce_na_nulu_smaze_radek_obsahu(self):
+        self.uskladni(self.stat[0], self.dil_id, 4)
+        korekce = self.korekce(self.stat[0], self.dil_id, 0)
+        self.assertEqual((korekce.mnozstvi, korekce.stav_pred_ks, korekce.stav_po_ks), (-4, 4, 0))
+        self.assertEqual(self.obsah(self.stat[0]), None)
+        self.assertEqual(self.soucet_pohybu(self.stat[0]), 0)                             # T32
+        self.assertEqual([(r["TypStavu"], r["StavUpozorneni"]) for r in self.upozorneni(self.stat_id)],
+                         [("VYCERPANO", "OTEVRENE")])
+
+    def test_pocatecni_stav_na_prazdne_pozici(self):
+        korekce = self.korekce(self.dyn[0], self.dil_id, 25, "POCAT-STAV")
+        self.assertEqual((korekce.stav_pred_ks, korekce.mnozstvi, korekce.stav_po_ks), (0, 25, 25))
+        self.assertEqual((self.obsah(self.dyn[0]), self.soucet_pohybu(self.dyn[0])), ((self.dil_id, 25), 25))
+
+    def test_korekce_na_blokovane_pozici_projde(self):
+        """Q-09: blokace zastaví příjem, výdej a přesun – inventuru a její korekce ne."""
+        self.blokuj(self.stat[0])
+        self.chyba(self.uskladni, self.stat[0], self.dil_id, 5, kod="POSITION_BLOCKED")
+        self.assertEqual(self.korekce(self.stat[0], self.dil_id, 5).stav_po_ks, 5)
+
+    def test_odmitne_cizi_dil_a_obsazenou_pozici(self):
+        jiny_dil, _ = self.dil()
+        self.chyba(self.korekce, self.stat[0], jiny_dil, 5, kod="WRONG_PART")             # STAT jiného dílu
+        self.chyba(self.korekce, self.stat[1], self.dil_id, 5, kod="WRONG_PART")          # STAT bez přiřazení
+        self.prijem(self.dyn[0], jiny_dil, 3)
+        self.chyba(self.korekce, self.dyn[0], self.dil_id, 5, kod="POSITION_OCCUPIED")
+        self.assertEqual(self.obsah(self.dyn[0]), (jiny_dil, 3))
+
+    def test_bez_rozdilu_a_spatne_zadani_se_nezapije(self):
+        """Rozdíl 0 ks kontrakt ani schema nepouští – inventura volá korekci jen při rozdílu."""
+        self.uskladni(self.stat[0], self.dil_id, 6)
+        self.chyba(self.korekce, self.stat[0], self.dil_id, 6, kod="VALIDATION_ERROR")
+        self.chyba(self.korekce, self.stat[0], self.dil_id, 5, typ_pohybu="VYDEJ", kod="VALIDATION_ERROR")
+        self.chyba(self.korekce, self.stat[0], self.dil_id, -1, kod="VALIDATION_ERROR")
+        self.chyba(sklad.zauctuj_korekci, self.spoj, self.kdo, 2_000_000_000, self.dil_id, 5, "KOREKCE",
+                   kod="NOT_FOUND")
+        self.assertEqual(self.obsah(self.stat[0]), (self.dil_id, 6))
+        self.assertEqual(len(self.pohyby(self.stat[0])), 1)
+
+
+class TestZpusobPotvrzeniCile(ZakladSkladu):
+    """D-18: pohyb do cíle nese ověřený způsob potvrzení (SKEN/RUCNE), ostatní mají NULL."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.kdo = Kontext(self.kdo.uzivatel_id, None, "ADMIN", frozenset({"RUCNI_POTVRZENI"}))
+        self.dil_id, _ = self.dil()
+        self.prirad_stat(self.dil_id, self.stat[0], minimalni_ks=0)
+
+    def test_prijem_do_dyn_uklada_sken_i_rucni_potvrzeni(self):
+        self.prijem(self.dyn[0], self.dil_id, 5)                                          # výchozí SKEN
+        self.prijem(self.dyn[1], self.dil_id, 5, zpusob_potvrzeni="RUCNE")
+        self.assertEqual([r["ZpusobPotvrzeni"] for r in self.pohyby(self.dyn[0], self.dyn[1])], ["SKEN", "RUCNE"])
+
+    def test_potvrzeni_nese_cilovy_pohyb(self):
+        self.prijem(self.dyn[0], self.dil_id, 6)
+        self.uskladni(self.stat[0], self.dil_id, 6, zdroj_kod=self.dyn[0].kod, zpusob_potvrzeni="RUCNE")
+        self.assertEqual([(r["KodPohybu"], r["ZpusobPotvrzeni"]) for r in self.pohyby(self.dyn[0], self.stat[0])],
+                         [("PRIJEM", "SKEN"), ("PRESUN-OUT", None), ("PRESUN-IN", "RUCNE")])
+        self.uskladni(self.stat[0], self.dil_id, 2)                                       # z výroby = PRIJEM
+        self.prijem(self.dyn[1], self.dil_id, 4)
+        self.presun(self.dyn[1], self.dyn[2], zpusob_potvrzeni="SKEN")
+        self.assertEqual([(r["KodPohybu"], r["ZpusobPotvrzeni"]) for r in self.pohyby(self.stat[0])],
+                         [("PRESUN-IN", "RUCNE"), ("PRIJEM", "SKEN")])
+        self.assertEqual([(r["KodPohybu"], r["ZpusobPotvrzeni"]) for r in self.pohyby(self.dyn[2])],
+                         [("PRESUN-IN", "SKEN")])
+
+    def test_vydej_presun_out_a_korekce_maji_null(self):
+        self.prijem(self.dyn[0], self.dil_id, 10)
+        self.uskladni(self.stat[0], self.dil_id, 10)
+        self.vydej(self.stat[0], 4)
+        self.korekce(self.stat[0], self.dil_id, 3)
+        self.assertEqual([(r["KodPohybu"], r["ZpusobPotvrzeni"]) for r in self.pohyby(self.stat[0])],
+                         [("PRIJEM", "SKEN"), ("VYDEJ", None), ("KOREKCE", None)])
 
 
 class TestOpakovanyRequest(ZakladIntegrace):

@@ -81,8 +81,12 @@ def varovani_nad_maximem(stav_po_ks: int, maximum_ks: int | None, kod_mista: str
 
 
 def over_zpusob_potvrzeni(zpusob: str, kdo: Kontext) -> None:
-    """Na terminálu se cíl skenuje; ruční potvrzení (výběr na PC) jen s RUCNI_POTVRZENI (Q-15, G2)."""
-    if zpusob == "RUCNE" and not kdo.ma(OPRAVNENI_RUCNI_POTVRZENI):
+    """Na terminálu se cíl skenuje; ruční potvrzení (výběr na PC) jen s RUCNI_POTVRZENI (Q-15, D-18)."""
+    if zpusob != "RUCNE":
+        return
+    if kdo.terminal_id is not None:      # PDA: sken je povinný, ani oprávnění nepomůže (D-18)
+        raise chyba_vstupu("Na terminálu je potřeba cíl naskenovat.", {"zpusobPotvrzeni": "Na terminálu jen SKEN."})
+    if not kdo.ma(OPRAVNENI_RUCNI_POTVRZENI):
         raise AppError("NO_PERMISSION", "Cíl je potřeba naskenovat. Ruční potvrzení vyžaduje oprávnění "
                                         f"{OPRAVNENI_RUCNI_POTVRZENI}.",
                        data={"chybiOpravneni": [OPRAVNENI_RUCNI_POTVRZENI]})
