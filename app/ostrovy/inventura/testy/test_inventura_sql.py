@@ -1,11 +1,13 @@
-"""Integrační testy ostrova F nad SQL Serverem: inventura za provozu (D-26) a plán korekcí (D-27).
+"""Integrační testy ostrova F nad SQL Serverem: inventura za provozu (D-26) a dokončení se zaúčtováním
+korekcí (D-27).
 
 Služby se volí `__wrapped__`, tedy bez dekorátoru: tělo běží ve spojení a transakci testu, takže se
 na konci vše vrátí zpět (@transakce si otevírá vlastní spojení a potvrzuje).
 
 Strukturu zakládáme rozhraním ostrova C a díly rozhraním ostrova D; obsah pozic, pohyby a STAT
 přiřazení píše test přímo do tabulek ostrova E, protože z cizího ostrova smí test importovat jen
-`rozhrani` a `ukazky` (P3) a `zauctuj_korekci` ani `prirad_stat_misto` ostrov E ještě neumí.
+`rozhrani` a `ukazky` (P3) a nad obsahem pozic nechce mít cizí skladový příkaz s vlastní hlavičkou
+transakce – korekce ostrov E účtuje sám, přes `zauctuj_korekci` ve transakci dokončení.
 Vypnutí pozice (výsledek rekonfigurace) píše test do `dbo.VnitrniPoziceBoxu`, to ostrov C umí až ve
 fázi 2. Každý test má pracoviště s jedinečným kódem a tvrdí něco jen o datech, která sám založil –
 potvrzená data ostatních ostrovů v databázi zůstávají.
@@ -17,13 +19,14 @@ from decimal import Decimal
 
 from app.ostrovy.dily import rozhrani as dily
 from app.ostrovy.dily.rozhrani import NovyDil
-from app.ostrovy.inventura import sluzby
+from app.ostrovy.inventura import repozitar, sluzby
 from app.ostrovy.inventura.kontrakty import DokonceniVstup, InventuryFiltr, NovaInventuraVstup, ZapisPolozkyVstup
 from app.ostrovy.sklad import rozhrani as sklad
 from app.ostrovy.struktura import rozhrani as struktura
 from app.platforma.chyby import AppError
 from app.platforma.db import Spojeni
 from app.platforma.kontrakty import DuvodVstup
+from app.platforma.sql_chyby import je_limit_zamku
 from app.platforma.typy import Kontext, PotrebaMista
 from tests.integrace.zaklad import ZakladIntegrace
 
@@ -131,6 +134,11 @@ class ZakladInventury(ZakladIntegrace):
                                                  vstup=DuvodVstup(duvod=duvod), kdo=self.kdo)
 
     def dokonci(self, inventura_id: int, **pole):
+        # Hlavičku SkladovaTransakce jinak zakládá @transakce; bez ní by korekční pohyb neměl TransakceID.
+        self.spoj.transakce_id = uuid.uuid4()
+        self.spoj.proved("INSERT INTO dbo.SkladovaTransakce (TransakceID, KlientRequestID, TypOperace,"
+                         " UzivatelID) VALUES (?, ?, ?, ?)", self.spoj.transakce_id, uuid.uuid4(),
+                         "INVENTURA_DOKONCENI", self.kdo.uzivatel_id)
         return sluzby.dokonci_inventuru.__wrapped__(self.spoj, inventura_id=inventura_id,
                                                     vstup=DokonceniVstup(request_id=uuid.uuid4(), **pole),
                                                     kdo=self.kdo)
@@ -170,8 +178,25 @@ class ZakladInventury(ZakladIntegrace):
         obsah = sklad.obsah_mist(self.spoj, [misto.vnitrni_pozice_id]).get(misto.vnitrni_pozice_id)
         return (obsah.dil_id, obsah.pocet_ks) if obsah else None
 
+    def pohyby(self, *mista: struktura.MistoInfo) -> list[dict]:
+        """Historie pohybů na pozicích – v jakém pořadí je dokončení zaúčtovalo a pod jakou transakcí."""
+        znacky = ", ".join("?" for _ in mista)
+        return self.spoj.dotaz(f"SELECT p.PohybID, p.VnitrniPoziceID, t.KodPohybu, p.DilID, p.Mnozstvi, p.StavPred,"
+                               f" p.StavPo, p.TransakceID, p.Poznamka"
+                               f" FROM dbo.SkladovyPohyb AS p JOIN dbo.TypPohybu AS t ON t.TypPohybuID = p.TypPohybuID"
+                               f" WHERE p.VnitrniPoziceID IN ({znacky}) ORDER BY p.PohybID",
+                               *[m.vnitrni_pozice_id for m in mista])
+
+    def soucet_pohybu(self, misto: struktura.MistoInfo) -> int:
+        """Součet podepsaných množství na pozici – musí sedět na její aktuální obsah (T32)."""
+        return self.spoj.hodnota("SELECT SUM(Mnozstvi) FROM dbo.SkladovyPohyb WHERE VnitrniPoziceID = ?",
+                                 misto.vnitrni_pozice_id) or 0
+
+    def uid(self, hodnota: object) -> uuid.UUID:
+        return uuid.UUID(str(hodnota))
+
     def pocet_pohybu(self) -> int:
-        """Pohyby na všech pozicích testu – inventura jich nesmí přidat ani jeden."""
+        """Pohyby na všech pozicích testu – operace, která nemá účtovat, jich nesmí přidat ani jeden."""
         znacky = ", ".join("?" for _ in self.pozice)
         return self.spoj.hodnota(f"SELECT COUNT(*) FROM dbo.SkladovyPohyb WHERE VnitrniPoziceID IN ({znacky})",
                                  *[m.vnitrni_pozice_id for m in self.pozice])
@@ -401,29 +426,55 @@ class TestZruseni(ZakladInventury):
 
 
 class TestDokonceni(ZakladInventury):
+    """Odmítnuté dokončení nezaúčtuje nic – inventura zůstane rozpracovaná a pozice nedotčené (T26)."""
+
     def test_nezapsane_pozice_brani_dokonceni(self):
         self.prijem(self.dyn[0], self.dil_a, 10)
         inventura_id = self.inventura("BOX", self.dyn_box).inventura_id
         self.zapis(inventura_id, self.dyn[0], self.dil_a, 10)
+        pred = self.pocet_pohybu()
 
         chyba = self.over_chybu(lambda: self.dokonci(inventura_id), "VALIDATION_ERROR")
+
         self.assertIn(self.dyn[1].kod, chyba.zprava)
+        self.assertEqual(self.pocet_pohybu(), pred)
+        self.assertEqual(self.detail(inventura_id).stav_inventury, "ROZPRACOVANA")
 
     def test_pozice_k_prepoctu_brani_dokonceni(self):
         misto = self.dyn[0]
         inventura_id, _ = self.inventura_na_pozici(misto, self.dil_a, 10)
         self.vydej(misto, 10)
         self.prijem(misto, self.dil_a, 6)
+        pred = self.pocet_pohybu()
 
         chyba = self.over_chybu(lambda: self.dokonci(inventura_id), "INVENTORY_RECOUNT")
+
         self.assertEqual(chyba.data["pozice"], [misto.kod])
+        self.assertEqual(self.pocet_pohybu(), pred)
+        self.assertEqual(self.obsah(misto), (self.dil_a, 6))
+        self.assertEqual(self.detail(inventura_id).stav_inventury, "ROZPRACOVANA")
+
+    def test_pohyb_jineho_dilu_brani_dokonceni(self):
+        misto = self.dyn[1]                                   # pozice, která měla být prázdná
+        inventura_id, _ = self.inventura_na_pozici(misto)
+        self.prijem(misto, self.dil_b, 4)
+        pred = self.pocet_pohybu()
+
+        self.over_chybu(lambda: self.dokonci(inventura_id), "INVENTORY_RECOUNT")
+
+        self.assertEqual(self.pocet_pohybu(), pred)
+        self.assertEqual(self.obsah(misto), (self.dil_b, 4))
 
     def test_jiny_dil_potrebuje_cil_i_v_dyn(self):
         """S-22: cíl je potřeba i na dynamické pozici – bez něj inventuru dokončit nelze."""
         misto = self.dyn[0]
         inventura_id, _ = self.inventura_na_pozici(misto, self.dil_a, 5, nalezeny=(self.dil_b, 3))
+        pred = self.pocet_pohybu()
 
         self.over_chybu(lambda: self.dokonci(inventura_id), "VALIDATION_ERROR", {"cileJinyDil"})
+
+        self.assertEqual(self.pocet_pohybu(), pred)
+        self.assertEqual(self.obsah(misto), (self.dil_a, 5))
 
     def test_cil_se_zadá_jen_pro_položku_s_jinym_dilem(self):
         misto = self.dyn[0]
@@ -433,17 +484,122 @@ class TestDokonceni(ZakladInventury):
                         "VALIDATION_ERROR", {"cileJinyDil"})
 
     def test_nevhodny_cil_jineho_dilu(self):
+        """Blokovaná i obsazená pozice, STAT místo jiného dílu a dvakrát týž cíl – to všechno je
+        neplatný cíl (D-27) a nic se zaúčtovat nesmí."""
         misto = self.dyn[0]
         inventura_id, _ = self.inventura_na_pozici(misto, self.dil_a, 5, nalezeny=(self.dil_b, 3))
         self.prijem(self.dyn[1], self.dil_a, 1)          # obsazená pozice
         self.blokuj(self.dyn[2])                         # volná, ale blokovaná
         self.prirad_stat(self.dil_a, self.stat[0])       # STAT místo jiného dílu
+        pred = self.pocet_pohybu()
 
         for cil in (*self.dyn[1:3], self.stat[0]):
             self.over_chybu(lambda c=cil: self.dokonci(inventura_id, cile_jiny_dil={
                 misto.vnitrni_pozice_id: c.kod}), "VALIDATION_ERROR", {"cileJinyDil"})
 
-    def test_dokonceni_s_cilem_pripravi_plan_bez_zauctovani(self):
+        self.assertEqual(self.pocet_pohybu(), pred)
+        self.assertEqual(self.obsah(misto), (self.dil_a, 5))
+        self.assertEqual(self.detail(inventura_id).stav_inventury, "ROZPRACOVANA")
+
+    def test_stejna_dyn_pozice_cilem_dvou_položek(self):
+        """D-27: jakmile se na volnou DYN pozici zaúčtuje první nález, pro druhou položku volná není."""
+        self.prijem(self.dyn[0], self.dil_a, 5)
+        self.prijem(self.dyn[1], self.dil_a, 7)
+        inventura_id = self.inventura("BOX", self.dyn_box).inventura_id
+        self.zapis(inventura_id, self.dyn[0], self.dil_b, 3)
+        self.zapis(inventura_id, self.dyn[1], self.dil_b, 2)
+        for volna in self.dyn[2:]:                     # nezapsaná položka by bránila dokončení
+            self.zapis(inventura_id, volna, None, 0)
+        pred = self.pocet_pohybu()
+
+        self.over_chybu(lambda: self.dokonci(inventura_id, cile_jiny_dil={
+            self.dyn[0].vnitrni_pozice_id: self.dyn[2].kod,
+            self.dyn[1].vnitrni_pozice_id: self.dyn[2].kod}), "VALIDATION_ERROR", {"cileJinyDil"})
+
+        self.assertEqual(self.pocet_pohybu(), pred)
+        self.assertEqual(self.obsah(self.dyn[0]), (self.dil_a, 5))
+        self.assertEqual(self.obsah(self.dyn[2]), None)
+
+    def test_dva_nalezy_na_stejne_stat_misto_se_sectou(self):
+        """Stejné STAT místo nalezeného dílu cílem víc položek je v pořádku, kusy se přičtou."""
+        self.prirad_stat(self.dil_b, self.stat[0])
+        self.prijem(self.dyn[0], self.dil_a, 5)
+        self.prijem(self.dyn[1], self.dil_a, 7)
+        inventura_id = self.inventura("BOX", self.dyn_box).inventura_id
+        self.zapis(inventura_id, self.dyn[0], self.dil_b, 3)
+        self.zapis(inventura_id, self.dyn[1], self.dil_b, 2)
+        for volna in self.dyn[2:]:                     # nezapsaná položka by bránila dokončení
+            self.zapis(inventura_id, volna, None, 0)
+
+        self.dokonci(inventura_id, cile_jiny_dil={self.dyn[0].vnitrni_pozice_id: self.stat[0].kod,
+                                                 self.dyn[1].vnitrni_pozice_id: self.stat[0].kod})
+
+        self.assertEqual(self.obsah(self.stat[0]), (self.dil_b, 5))
+        self.assertEqual(self.soucet_pohybu(self.stat[0]), 5)
+
+
+class TestDokonceniZauctuje(ZakladInventury):
+    """21.1.7: každý rozdíl i nález se zaúčtuje pohybem INVENTURA, nikdy tichým přepisem (T11, T25, T32)."""
+
+    def test_rozdil_zauctuje_pravy_jeden_pohyb(self):
+        misto = self.dyn[0]
+        inventura_id, _ = self.inventura_na_pozici(misto, self.dil_a, 10, nalezeny=(self.dil_a, 8))
+
+        vysledek = self.dokonci(inventura_id, poznamka="inventura na konci měsíce")
+
+        radek = self.pohyby(misto)[-1]
+        self.assertEqual(vysledek.pohyby, [radek["PohybID"]])
+        self.assertEqual((radek["KodPohybu"], radek["DilID"], radek["Mnozstvi"], radek["StavPred"], radek["StavPo"]),
+                         ("INVENTURA", self.dil_a, -2, 10, 8))
+        self.assertEqual(self.uid(radek["TransakceID"]), self.spoj.transakce_id)    # pohyb patří do dokončení
+        self.assertEqual(radek["Poznamka"], "inventura na konci měsíce")
+        self.assertEqual(self.obsah(misto), (self.dil_a, 8))                        # stav = nalezený počet
+        self.assertEqual(self.soucet_pohybu(misto), 8)                              # T32
+
+    def test_dopocet_se_stavi_pohybu_po_zapisu(self):
+        """D-26: po zápisu ještě výdej téhož dílu → zaúčtuje se aktuální stav + rozdíl."""
+        misto = self.dyn[0]
+        inventura_id, _ = self.inventura_na_pozici(misto, self.dil_a, 10, nalezeny=(self.dil_a, 8))
+        self.vydej(misto, 3)                                                        # aktuálně 7 ks
+
+        vysledek = self.dokonci(inventura_id)
+
+        self.assertEqual((vysledek.pocet_shod, vysledek.pocet_rozdilu, len(vysledek.pohyby)), (0, 1, 1))
+        self.assertEqual(self.obsah(misto), (self.dil_a, 5))
+        self.assertEqual(self.soucet_pohybu(misto), 5)
+
+    def test_shoda_se_neucuje_nalezena_prazdna_vynuluje(self):
+        plna = self.dyn[0]
+        volna = self.dyn[1]
+        self.prijem(plna, self.dil_a, 10)
+        inventura_id = self.inventura("BOX", self.dyn_box).inventura_id
+        self.zapis(inventura_id, plna, None, 0)         # našlo se prázdné → rozdíl −10
+        self.zapis(inventura_id, volna, None, 0)        # prázdná měla být prázdná → shoda
+        for dalsi in self.dyn[2:]:                      # nezapsaná položka by bránila dokončení
+            self.zapis(inventura_id, dalsi, None, 0)
+
+        self.dokonci(inventura_id)
+
+        self.assertEqual([(r["KodPohybu"], r["Mnozstvi"], r["StavPo"]) for r in self.pohyby(plna)],
+                         [("PRIJEM", 10, 10), ("INVENTURA", -10, 0)])
+        self.assertEqual(self.pohyby(volna), [])
+        self.assertIsNone(self.obsah(plna))
+        self.assertEqual(self.soucet_pohybu(plna), 0)
+
+    def test_jiny_dil_v_dyn_se_uctuje_na_volnou_pozici(self):
+        """T25: očekávaný díl se odúčtuje na 0 a nalezený přičte na volnou DYN pozici stejné velikosti."""
+        misto = self.dyn[0]
+        inventura_id, _ = self.inventura_na_pozici(misto, self.dil_a, 5, nalezeny=(self.dil_b, 3))
+
+        self.dokonci(inventura_id, cile_jiny_dil={misto.vnitrni_pozice_id: self.dyn[1].kod})
+
+        self.assertEqual([(r["VnitrniPoziceID"], r["DilID"], r["Mnozstvi"]) for r in self.pohyby(misto, self.dyn[1])],
+                         [(misto.vnitrni_pozice_id, self.dil_a, 5), (misto.vnitrni_pozice_id, self.dil_a, -5),
+                          (self.dyn[1].vnitrni_pozice_id, self.dil_b, 3)])      # naskladnit, odúčtovat, přičíst
+        self.assertIsNone(self.obsah(misto))
+        self.assertEqual(self.obsah(self.dyn[1]), (self.dil_b, 3))
+
+    def test_jiny_dil_ve_stat_se_uctuje_na_misto_nalezeneho_dilu(self):
         misto = self.dyn[0]
         inventura_id, _ = self.inventura_na_pozici(misto, self.dil_a, 5, nalezeny=(self.dil_b, 3))
         self.prirad_stat(self.dil_b, self.stat[0])
@@ -451,11 +607,10 @@ class TestDokonceni(ZakladInventury):
         vysledek = self.dokonci(inventura_id, cile_jiny_dil={misto.vnitrni_pozice_id: self.stat[0].kod})
 
         self.assertEqual((vysledek.pocet_shod, vysledek.pocet_rozdilu, vysledek.pocet_jinych_dilu), (0, 0, 1))
-        self.assertEqual(len(vysledek.pohyby), 2)         # odúčtovat očekávaný díl + zaúčtovat nález na cíl
-        self.assertEqual(self.detail(inventura_id).stav_inventury, "ROZPRACOVANA")
-        self.assertEqual(self.obsah(misto), (self.dil_a, 5))
-        self.assertIsNone(self.obsah(self.stat[0]))
-        self.assertEqual(self.pocet_pohybu(), 1)          # krok 1 nezaúčtoval ani jeden pohyb
+        self.assertEqual(vysledek.pohyby, [r["PohybID"] for r in self.pohyby(misto, self.stat[0])][1:])
+        self.assertIsNone(self.obsah(misto))
+        self.assertEqual(self.obsah(self.stat[0]), (self.dil_b, 3))
+        self.assertEqual(self.soucet_pohybu(self.stat[0]), 3)
 
     def test_cilem_muze_byt_i_soucasna_pozice_po_oductovani(self):
         """D-27: současná pozice je cíl, jen když po odúčtování očekávaného dílu splňuje stejná pravidla."""
@@ -465,13 +620,116 @@ class TestDokonceni(ZakladInventury):
         vysledek = self.dokonci(inventura_id, cile_jiny_dil={misto.vnitrni_pozice_id: misto.kod})
 
         self.assertEqual((vysledek.pocet_jinych_dilu, len(vysledek.pohyby)), (1, 2))
-        self.assertEqual(self.obsah(misto), (self.dil_a, 5))   # i tak se účtuje až v kroku 2
+        self.assertEqual([(r["DilID"], r["Mnozstvi"]) for r in self.pohyby(misto)],
+                         [(self.dil_a, 5), (self.dil_a, -5), (self.dil_b, 3)])   # naskladnit, odúčtovat, přičíst
+        self.assertEqual(self.obsah(misto), (self.dil_b, 3))
 
-    def test_dokonceni_se_stavem_a_rozdilem(self):
+    def test_pricteni_na_pozici_s_vlastni_korekci_az_po_ni(self):
+        """Pořadí průchodů: cílem je inventarizovaná pozice s rozdílem téhož dílu → (aktuální + rozdíl) + nález."""
+        self.prirad_stat(self.dil_b, self.stat[0])
+        self.prijem(self.stat[0], self.dil_b, 10)
+        self.prijem(self.dyn[0], self.dil_a, 5)
+        inventura_id = self.inventura("REGAL", self.regal).inventura_id
+        self.zapis(inventura_id, self.stat[0], self.dil_b, 8)     # rozdíl −2 na samostatné pozici
+        self.zapis(inventura_id, self.dyn[0], self.dil_b, 3)      # nález míří na tutéž pozici
+        for volna in (*self.dyn[1:], *self.stat[1:]):             # nezapsaná položka brání dokončení
+            self.zapis(inventura_id, volna, None, 0)
+
+        self.dokonci(inventura_id, cile_jiny_dil={self.dyn[0].vnitrni_pozice_id: self.stat[0].kod})
+
+        self.assertEqual([(r["Mnozstvi"], r["StavPo"]) for r in self.pohyby(self.stat[0])],
+                         [(10, 10), (-2, 8), (3, 11)])
+        self.assertEqual(self.obsah(self.stat[0]), (self.dil_b, 11))
+        self.assertEqual(self.soucet_pohybu(self.stat[0]), 11)
+        self.assertIsNone(self.obsah(self.dyn[0]))
+
+
+class TestPoDokonceni(ZakladInventury):
+    """Uzavřená inventura se nedá opakovat ani měnit, její položky se už nepřepočítávají a její
+    pozice jdou zařadit do inventury nové."""
+
+    def test_dokonceni_ulozi_stav_čas_a_autora(self):
         misto = self.dyn[0]
         inventura_id, _ = self.inventura_na_pozici(misto, self.dil_a, 10, nalezeny=(self.dil_a, 8))
-        self.vydej(misto, 3)                               # aktuálně 5 ks → nový stav 5 − 2
 
-        vysledek = self.dokonci(inventura_id)
+        self.dokonci(inventura_id)
 
-        self.assertEqual((vysledek.pocet_shod, vysledek.pocet_rozdilu, len(vysledek.pohyby)), (0, 1, 1))
+        radek = self.spoj.jeden("SELECT StavInventury, DatumDokonceni, DokoncilUzivatelID FROM dbo.Inventura"
+                               " WHERE InventuraID = ?", inventura_id)
+        self.assertEqual(radek["StavInventury"], "DOKONCENA")
+        self.assertEqual(radek["DokoncilUzivatelID"], self.kdo.uzivatel_id)
+        self.assertIsNotNone(radek["DatumDokonceni"])
+
+    def test_druhe_dokonceni_zapis_i_zruseni_skonci_concurrent_change(self):
+        misto = self.dyn[0]
+        inventura_id, _ = self.inventura_na_pozici(misto, self.dil_a, 10, nalezeny=(self.dil_a, 8))
+        self.dokonci(inventura_id)
+        pohyby = self.pocet_pohybu()
+
+        self.over_chybu(lambda: self.dokonci(inventura_id), "CONCURRENT_CHANGE")
+        self.over_chybu(lambda: self.zapis(inventura_id, misto, self.dil_a, 7), "CONCURRENT_CHANGE")
+        self.over_chybu(lambda: self.zrus(inventura_id), "CONCURRENT_CHANGE")
+
+        self.assertEqual(self.pocet_pohybu(), pohyby)          # druhé dokončení nezaúčtovalo nic
+        self.assertEqual(self.obsah(misto), (self.dil_a, 8))   # ani po druhém dopočtu
+        self.assertEqual(self.soucet_pohybu(misto), 8)
+
+    def test_pozici_dokoncene_inventury_lze_inventarizovat_znovu(self):
+        misto = self.dyn[0]
+        inventura_id, _ = self.inventura_na_pozici(misto, self.dil_a, 10, nalezeny=(self.dil_a, 8))
+        self.dokonci(inventura_id)
+
+        druha = self.inventura("POZICE", misto.vnitrni_pozice_id)
+
+        self.assertEqual(druha.stav_inventury, "ROZPRACOVANA")
+        self.assertEqual([(p.ocekavany_dil_id, p.ocekavany_pocet_ks, p.stav_polozky) for p in druha.polozky],
+                         [(self.dil_a, 8, "CEKA")])
+
+    def test_dokoncena_inventura_se_neprepocitava(self):
+        misto = self.dyn[0]
+        inventura_id, _ = self.inventura_na_pozici(misto, self.dil_a, 10, nalezeny=(self.dil_a, 8))
+
+        self.dokonci(inventura_id)
+
+        self.assertEqual(self.polozka(inventura_id, misto).stav_polozky, "ZAPSANO")
+
+        self.vydej(misto, 8)            # vlastní korekce už proběhla; za provozu by to bylo PŘEPOČÍTAT
+
+        polozka = self.polozka(inventura_id, misto)
+
+        self.assertEqual((polozka.stav_polozky, polozka.skutecny_pocet_ks), ("ZAPSANO", 8))
+        self.assertEqual(self.detail(inventura_id).pocet_k_prepoctu, 0)
+
+    def test_zrusena_inventura_se_neprepocitava(self):
+        misto = self.dyn[0]
+        inventura_id, _ = self.inventura_na_pozici(misto, self.dil_a, 10, nalezeny=(self.dil_a, 8))
+        self.zrus(inventura_id)
+        self.vydej(misto, 10)           # za provozu by pohyb vrátil pozici k fyzické kontrole
+
+        polozka = self.polozka(inventura_id, misto)
+
+        self.assertEqual(polozka.stav_polozky, "ZAPSANO")
+        self.assertEqual(self.detail(inventura_id).pocet_k_prepoctu, 0)
+
+
+class TestZamekHlavicky(ZakladInventury):
+    """Zámek hlavičky (UPDLOCK) seřadí operace jedné inventury za sebe: druhé dokončení počká, uvidí
+    DOKONCENA a skončí CONCURRENT_CHANGE, místo aby dopočítalo a zaúčtovalo rozdíl podruhé."""
+
+    def druhe_spojeni_s_timeoutem(self) -> Spojeni:
+        """Druhé spojení počká na cizí zámek jen 200 ms (vzor test_zamky_integrace.py z ostrova C)."""
+        druhe = self.druhe_spojeni()
+        druhe.proved("SET LOCK_TIMEOUT 200;")
+        return druhe
+
+    def test_zamcenou_hlavicku_druhe_spojeni_nedostane(self):
+        inventura_id = self.inventura("BOX", self.dyn_box).inventura_id
+        repozitar.inventura_s_zamkem(self.spoj, inventura_id)     # zámek drží do konce transakce
+        druhe = self.druhe_spojeni_s_timeoutem()
+
+        with self.assertRaises(Exception) as zachyceno:
+            repozitar.inventura_s_zamkem(druhe, inventura_id)
+
+        self.assertTrue(je_limit_zamku(zachyceno.exception), zachyceno.exception)
+        # čtení pro klienta bez zámku nečeká; None je tu jen proto, že první spojení ještě nepotvrdilo
+        self.assertIsNone(repozitar.inventura(druhe, inventura_id))

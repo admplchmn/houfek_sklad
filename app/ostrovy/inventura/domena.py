@@ -98,7 +98,8 @@ def jiny_dil(p: Polozka) -> bool:
 
 
 def stav_polozky(*, zapsano: bool, dil_id: int | None, vysledek: str | None, rozdil_ks: int,
-                 aktualni_pocet_ks: int, pohyby: Sequence[Pohyb], aktivni: bool) -> str:
+                 aktualni_pocet_ks: int, pohyby: Sequence[Pohyb], aktivni: bool,
+                 uzavrena: bool = False) -> str:
     """CEKA | ZAPSANO | PREPOCITAT za provozu (D-26).
 
     `dil_id` je očekávaný díl položky, `rozdil_ks` a `vysledek` z vyhodnot(), `aktualni_pocet_ks`
@@ -108,9 +109,14 @@ def stav_polozky(*, zapsano: bool, dil_id: int | None, vysledek: str | None, roz
     „aktuální stav + rozdíl“ není záporný – korekce se pak dopočítá (planuj_korekce).
     Přepočítává se jiný díl, vyprázdnění a znovuobsazení, neaktivní pozice po rekonfiguraci,
     záporný dopočet a jakýkoli pohyb u JINY_DIL. Zjištěný díl ani počet pohyb nikdy nepřepíše.
+
+    `uzavrena` = inventura už není rozpracovaná: nepřepočítá se, zapsaná položka je ZAPSANO.
+    Vlastní korekční pohyb i každá pozdější změna pozice by ji jinak ukázaly jako PREPOCITAT.
     """
     if not zapsano:
         return "CEKA"
+    if uzavrena:
+        return "ZAPSANO"
     if not aktivni:
         return "PREPOCITAT"
     if not pohyby:
