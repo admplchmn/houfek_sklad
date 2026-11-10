@@ -594,7 +594,8 @@ class TestDokonceniZauctuje(ZakladInventury):
         self.dokonci(inventura_id, cile_jiny_dil={misto.vnitrni_pozice_id: self.dyn[1].kod})
 
         self.assertEqual([(r["VnitrniPoziceID"], r["DilID"], r["Mnozstvi"]) for r in self.pohyby(misto, self.dyn[1])],
-                         [(misto.vnitrni_pozice_id, self.dil_a, -5), (self.dyn[1].vnitrni_pozice_id, self.dil_b, 3)])
+                         [(misto.vnitrni_pozice_id, self.dil_a, 5), (misto.vnitrni_pozice_id, self.dil_a, -5),
+                          (self.dyn[1].vnitrni_pozice_id, self.dil_b, 3)])      # naskladnit, odúčtovat, přičíst
         self.assertIsNone(self.obsah(misto))
         self.assertEqual(self.obsah(self.dyn[1]), (self.dil_b, 3))
 
@@ -620,7 +621,7 @@ class TestDokonceniZauctuje(ZakladInventury):
 
         self.assertEqual((vysledek.pocet_jinych_dilu, len(vysledek.pohyby)), (1, 2))
         self.assertEqual([(r["DilID"], r["Mnozstvi"]) for r in self.pohyby(misto)],
-                         [(self.dil_a, -5), (self.dil_b, 3)])     # nejdřív odúčtovat, pak přičíst
+                         [(self.dil_a, 5), (self.dil_a, -5), (self.dil_b, 3)])   # naskladnit, odúčtovat, přičíst
         self.assertEqual(self.obsah(misto), (self.dil_b, 3))
 
     def test_pricteni_na_pozici_s_vlastni_korekci_az_po_ni(self):
@@ -673,7 +674,7 @@ class TestPoDokonceni(ZakladInventury):
         self.assertEqual(self.obsah(misto), (self.dil_a, 8))   # ani po druhém dopočtu
         self.assertEqual(self.soucet_pohybu(misto), 8)
 
-    def test_pozici_dokoncene_inventury_ze_inventarizovat_znovu(self):
+    def test_pozici_dokoncene_inventury_lze_inventarizovat_znovu(self):
         misto = self.dyn[0]
         inventura_id, _ = self.inventura_na_pozici(misto, self.dil_a, 10, nalezeny=(self.dil_a, 8))
         self.dokonci(inventura_id)
