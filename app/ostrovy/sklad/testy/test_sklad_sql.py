@@ -2,7 +2,8 @@
 
 Služby se volí přes `__wrapped__`, tedy bez dekorátoru: tělo běží ve spojení a transakci testu a na
 konci se vše vrátí zpět (@transakce si otevírá vlastní spojení a potvrzuje). Jedině
-`TestOpakovanyRequest` pouští službu i s dekorátorem – ten potřebuje potvrzená data (T14).
+`TestOpakovanyRequest` a `TestSoubeh` pouštějí službu i s dekorátorem – oba potřebují potvrzená data
+(T14, souběh dvou spojení T10 a T30).
 
 Strukturu zakládáme rozhraním ostrova C a díly rozhraním ostrova D (P2); STAT místa zakládá služba
 (`zaloz_stat`), `prirad_stat` je rychlé vložení přímo do tabulky pro testy, ve kterých nezáleží na
@@ -12,8 +13,12 @@ o počtech řádků obecně a kontrolu integrity vyhodnocujeme jen pro nálezy, 
 """
 from __future__ import annotations
 
+import threading
+import time
 import uuid
+from collections.abc import Callable
 from decimal import Decimal
+from typing import Any
 
 from app.ostrovy.dily import rozhrani as dily
 from app.ostrovy.dily.rozhrani import NovyDil
@@ -25,6 +30,7 @@ from app.ostrovy.sklad.kontrakty import (
     PresunVstup,
     PrijemDynVstup,
     PrijemStatVstup,
+    SkladovyVysledek,
     UpozorneniFiltr,
     UzavreniUpozorneniVstup,
     VydejVstup,
@@ -33,7 +39,7 @@ from app.ostrovy.sklad.kontrakty import (
 from app.ostrovy.struktura import rozhrani as struktura
 from app.platforma.chyby import AppError
 from app.platforma.db import Spojeni, spojeni_pro_skript
-from app.platforma.kontrakty import DuvodVstup
+from app.platforma.kontrakty import DuvodVstup, Vstup
 from app.platforma.typy import Kontext, PotrebaMista
 from tests.integrace.zaklad import ZakladIntegrace
 
@@ -946,3 +952,122 @@ class TestOpakovanyRequest(ZakladIntegrace):
         self.assertEqual(zachyceno.exception.kod, "VALIDATION_ERROR")
         self.assertEqual(len(self.druhe_spojeni().dotaz("SELECT PohybID FROM dbo.SkladovyPohyb"
                                                         " WHERE VnitrniPoziceID = ?", self.cil.vnitrni_pozice_id)), 1)
+
+
+class TestSoubeh(ZakladIntegrace):
+    """T10 a T30: dvě skladové operace běžící naráz se seřadí na zámku pozic, žádný deadlock.
+
+    Data musí být potvrzená, jinak je druhé spojení pod RCSI nevidí: strukturu i díly proto zakládá
+    `spojeni_pro_skript()` a počáteční zásobu skutečná služba s dekorátorem – vše v databázi zůstává
+    (stejně jako v provozu). Spojení testu si před startem vláken zamkne dotčená místa, takže obě
+    operace stojí na stejném prvním zámku; `zamkni_mista` bere pozice vzestupně podle ID, takže se
+    seřadí za sebe a nikdy na sebe nenarazí křížově. Rollback spojení testu je pustí.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.kdo = Kontext(self.uzivatel_testu(), None, "ADMIN", frozenset())
+        with spojeni_pro_skript() as spoj:
+            self.dyn = nova_struktura(spoj, self.kdo)["dyn"]
+            self.dil_1, _ = novy_dil(spoj, self.kdo)
+            self.dil_2, _ = novy_dil(spoj, self.kdo)
+
+    # --- příkazy --------------------------------------------------------------------------------
+
+    @staticmethod
+    def vstup_prijem(cil: struktura.MistoInfo, dil_id: int, pocet_ks: int) -> PrijemDynVstup:
+        """Každé volání vlastní requestId, aby se obě vlákna netvařila jako dvojité odeslání (T14)."""
+        return PrijemDynVstup(request_id=uuid.uuid4(), dil_id=dil_id, cil_kod=cil.kod, pocet_ks=pocet_ks)
+
+    @staticmethod
+    def vstup_presun(zdroj: struktura.MistoInfo, cil: struktura.MistoInfo) -> PresunVstup:
+        return PresunVstup(request_id=uuid.uuid4(), zdroj_kod=zdroj.kod, cil_kod=cil.kod)
+
+    def pust_vlakna(self, *prikazy: tuple[Callable[..., Any], Vstup]) -> list[Any]:
+        """Každý příkaz (služba, vstup) ve vlastním vlákně a app contextu; výsledek, nebo AppError.
+
+        Po půl sekundě obě vlákna čekají na zámek, který drží spojení testu (čekací limit
+        `db_limit_zamku_ms` je 5 s); rollback spojení testu zámek uvolní a operace se seřadí za sebe.
+        Jinou výjimku než `AppError` vypíše samo vlákno a test padne na chybějícím výsledku.
+        """
+        def volat(poradi: int, sluzba: Callable[..., Any], vstup: Vstup) -> None:
+            with self.app.app_context():
+                try:
+                    vysledky[poradi] = sluzba(vstup=vstup, kdo=self.kdo)
+                except AppError as chyba:
+                    vysledky[poradi] = chyba
+
+        vysledky: list[Any] = [None] * len(prikazy)
+        vlakna = [threading.Thread(target=volat, args=(poradi, sluzba, vstup))
+                  for poradi, (sluzba, vstup) in enumerate(prikazy)]
+        for vlakno in vlakna:
+            vlakno.start()
+        time.sleep(0.5)              # obě vlákna už stojí na zámku
+        self.spoj._rollback()        # uvolní zámky pozic, na kterých obě vlákna čekají
+        for vlakno in vlakna:
+            vlakno.join(timeout=20)
+            self.assertFalse(vlakno.is_alive(), "Souběžná operace nedoběhla")
+        return vysledky
+
+    # --- zjištění stavu na druhém spojení (spojení testu potvrzená data nevidí) ---------------------
+
+    @staticmethod
+    def obsah(spoj: Spojeni, misto: struktura.MistoInfo) -> tuple[int, int] | None:
+        """(dilId, počet ks) čtené rozhraním ostrova E; prázdná pozice je None."""
+        obsah = sklad.obsah_mist(spoj, [misto.vnitrni_pozice_id]).get(misto.vnitrni_pozice_id)
+        return (obsah.dil_id, obsah.pocet_ks) if obsah else None
+
+    @staticmethod
+    def pohyby(spoj: Spojeni, *mista: struktura.MistoInfo) -> list[dict]:
+        """Historie pohybů na pozicích – pro jejich počet i součet množství (T32)."""
+        znacky = ", ".join("?" for _ in mista)
+        return spoj.dotaz(f"SELECT t.KodPohybu, p.VnitrniPoziceID, p.Mnozstvi FROM dbo.SkladovyPohyb AS p"
+                          f" JOIN dbo.TypPohybu AS t ON t.TypPohybuID = p.TypPohybuID"
+                          f" WHERE p.VnitrniPoziceID IN ({znacky}) ORDER BY p.PohybID",
+                          *[m.vnitrni_pozice_id for m in mista])
+
+    def test_prijem_do_stejne_pozice_naraz(self):
+        """T10: dva příjmy do jedné volné DYN pozice – projde právě jeden, druhý POSITION_OCCUPIED."""
+        cil = self.dyn[0]
+        struktura.zamkni_mista(self.spoj, [cil.vnitrni_pozice_id])
+        with self.assertNoLogs("houfek.transakce", level="WARNING"):     # žádný deadlock ani vypršení zámku
+            vysledky = self.pust_vlakna((sluzby.prijem_dyn, self.vstup_prijem(cil, self.dil_1, 5)),
+                                        (sluzby.prijem_dyn, self.vstup_prijem(cil, self.dil_2, 7)))
+
+        self.assertEqual(sorted(v.kod if isinstance(v, AppError) else type(v).__name__ for v in vysledky),
+                         ["POSITION_OCCUPIED", "SkladovyVysledek"])
+        [uspesny] = [v for v in vysledky if isinstance(v, SkladovyVysledek)]
+        druhe = self.druhe_spojeni()
+        self.assertEqual(self.obsah(druhe, cil), (uspesny.dil_id, uspesny.pocet_ks))    # zvítězivší dávka
+        self.assertEqual([(r["KodPohybu"], r["Mnozstvi"]) for r in self.pohyby(druhe, cil)],
+                         [("PRIJEM", uspesny.pocet_ks)])                                # na pozici je jeden pohyb
+
+    def test_presun_teziste_sem_a_zpet_naraz(self):
+        """T30: přesun A → B a B → A naráz – oba skončí bezpečně, jako by proběhly za sebou."""
+        a, b = self.dyn[:2]
+        sluzby.prijem_dyn(vstup=self.vstup_prijem(a, self.dil_1, 7), kdo=self.kdo)      # zásoba na A
+        struktura.zamkni_mista(self.spoj, [m.vnitrni_pozice_id for m in (a, b)])
+        with self.assertNoLogs("houfek.transakce", level="WARNING"):
+            dopredu, zpet = self.pust_vlakna((sluzby.presun, self.vstup_presun(a, b)),
+                                             (sluzby.presun, self.vstup_presun(b, a)))
+
+        # B → A skončí chybou jen tehdy, že začalo první (z prázdné B se nedalo brát); jinak už na B
+        # dávka z přesunu A → B byla a oba přesuny proběhly za sebou
+        if isinstance(zpet, AppError):
+            self.assertEqual(zpet.kod, "INSUFFICIENT_STOCK")     # B → A šlo první a B byla prázdná
+            self.assertIsInstance(dopredu, SkladovyVysledek)
+            kde, ruchu_navic = b, 2                              # dávka zůstala na B
+        else:
+            self.assertIsInstance(dopredu, SkladovyVysledek)     # A → B první, B → A vrátilo dávku zpět
+            self.assertIsInstance(zpet, SkladovyVysledek)
+            kde, ruchu_navic = a, 4
+
+        druhe = self.druhe_spojeni()
+        radky = self.pohyby(druhe, a, b)
+        self.assertEqual(len(radky), 1 + ruchu_navic, [r["KodPohybu"] for r in radky])   # 1 = příjem
+        self.assertEqual({self.obsah(druhe, a), self.obsah(druhe, b)}, {(self.dil_1, 7), None})
+        self.assertEqual(self.obsah(druhe, kde), (self.dil_1, 7))
+        for misto in (a, b):                                      # T32: součet pohybů = obsah pozice
+            hnuti = [r["Mnozstvi"] for r in radky if r["VnitrniPoziceID"] == misto.vnitrni_pozice_id]
+            stav = self.obsah(druhe, misto)
+            self.assertEqual(sum(hnuti), stav[1] if stav else 0, misto.kod)
