@@ -225,6 +225,46 @@ def over_rozmer_c7(velikost: str, rozmer: Rozmer, rozmer_boxu: Rozmer) -> Rozmer
     return rozmer
 
 
+# --- štítky (11.1, 11.2.2, 11.3, D-31) ---------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class PodkladStitku:
+    """Podklad pro štítek jedné pozice: kód z šablony a číslo dílu z aktivního STAT přiřazení (None = bez něj)."""
+
+    kod_pozice: str
+    cislo_dilu: str | None = None
+
+
+@dataclass(frozen=True)
+class Stitek:
+    """Štítek k vytištění. `kod` je vždy kód boxu nebo pozice – čárový kód nikdy nekóduje číslo dílu.
+
+    `velky_text` je číslo dílu, které se na STAT štítek tiskne velkým písmem; ostatní štítky ho nemají.
+    """
+
+    typ: str                     # BOX | POZICE_DYN | POZICE_STAT
+    kod: str
+    velky_text: str | None = None
+
+
+def stitek_pozice(kod_boxu: str, typ_boxu: str, podklad: PodkladStitku) -> Stitek:
+    """Štítek jedné pozice (11.1); číslo dílu se tiskne jen u STAT, protože obsah DYN pozice se mění.
+
+    Slouží i pro přetisk jedné pozice po změně STAT přiřazení, bez štítku boxu.
+    """
+    return Stitek(f"POZICE_{typ_boxu}", f"{kod_boxu}-{podklad.kod_pozice}",
+                  podklad.cislo_dilu if typ_boxu == "STAT" else None)
+
+
+def sticky_boxu(kod_boxu: str, typ_boxu: str, pozice: Sequence[PodkladStitku]) -> list[Stitek]:
+    """Hlavní štítek boxu a za ním štítky všech pozic v pořadí boxu (11.2.2, 11.3).
+
+    Hlavní štítek má i box s jedinou pozicí (C1 a C7) – oba se tisknou a přetiskují zvlášť.
+    """
+    return [Stitek("BOX", kod_boxu)] + [stitek_pozice(kod_boxu, typ_boxu, p) for p in pozice]
+
+
 # --- přesun, blokace a adresa ---------------------------------------------------------------------
 
 

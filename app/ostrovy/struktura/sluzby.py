@@ -57,6 +57,7 @@ from .kontrakty import (
     ZmenaUrovneVstup,
 )
 from .rozhrani import rozloz_kod, zamkni_mista
+from .stitky import kresli_pdf
 
 # Pole PATCH kontraktu → sloupec vlastní tabulky (název sloupce se píše do AuditZmen.Pole).
 _SLOUPCE_PRACOVISTE = {"nazev": "NazevPracoviste"}
@@ -108,6 +109,37 @@ def detail_vnitrni_pozice(spoj: Spojeni, vnitrni_pozice_id: int) -> VnitrniPozic
 def seznam_cleneni(spoj: Spojeni) -> Seznam[CleneniRadek]:
     """Konfigurace C1–C7 se šablonou přihrádek (Q-06) – pro formulář boxu a náhled SVG."""
     return Seznam[CleneniRadek](polozky=_seskup_cleneni(repozitar.polozky_cleneni(spoj)))
+
+
+@cteni
+def stitky_pdf(spoj: Spojeni, *, box_id: int | None = None, uroven_id: int | None = None,
+               vnitrni_pozice_id: int | None = None) -> bytes:
+    """Štítky jako PDF s Code 128 (D-31) – právě jeden z parametrů určuje, co se tiskne.
+
+        box_id             hlavní štítek boxu a za ním štítky všech jeho aktivních pozic (11.2.2)
+        uroven_id          totéž pro všechny aktivní boxy úrovně v pořadí Pozice P01…Pn
+        vnitrni_pozice_id  jen štítek jedné pozice – přetisk čísla dílu po změně přiřazení (11.1)
+
+    Vyřazený box ani vyřazená pozice se netisknou, číslo dílu STAT pozic se čte z pohledů E a D.
+    Chyby: VALIDATION_ERROR (žádný nebo víc parametrů), NOT_FOUND (neexistuje nebo je vyřazené).
+    """
+    if sum(hodnota is not None for hodnota in (box_id, uroven_id, vnitrni_pozice_id)) != 1:
+        raise AppError("VALIDATION_ERROR", "Vyberte právě jeden z parametrů boxId, urovenId, vnitrniPoziceId.")
+    if vnitrni_pozice_id is not None:
+        misto = _nacti_pozici(spoj, vnitrni_pozice_id)
+        cislo = repozitar.cisla_dilu_stat(spoj, [vnitrni_pozice_id]).get(vnitrni_pozice_id)
+        return kresli_pdf([domena.stitek_pozice(misto["KodBoxu"], misto["KodTypu"],
+                                               domena.PodkladStitku(misto["KodPozice"], cislo))])
+    if box_id is not None:
+        box = _nacti_aktivni_box(spoj, box_id)
+        boxy = [(box, repozitar.pozice_boxu(spoj, box["BoxID"]))]
+    else:
+        uroven = _nacti_uroven(spoj, uroven_id)
+        if not uroven["Aktivni"]:
+            raise AppError("NOT_FOUND", f"Úroveň {uroven_id} je vyřazená.")
+        boxy = [(b, repozitar.pozice_boxu(spoj, b["BoxID"])) for b in repozitar.boxy_urovne(spoj, uroven_id)]
+    cisla = repozitar.cisla_dilu_stat(spoj, [p["VnitrniPoziceID"] for _, pozice in boxy for p in pozice])
+    return kresli_pdf([stitek for box, pozice in boxy for stitek in _stitky_boxu(box, pozice, cisla)])
 
 
 # --- blokace (BLOKACE, skladový příkaz) ----------------------------------------------------------------
@@ -440,6 +472,14 @@ def _kod_boxu(spoj: Spojeni, regal_id: int, typ_boxu: str, cislo: int | None,
 def _ids_pozic(spoj: Spojeni, box_id: int) -> list[int]:
     """Aktivní vnitřní pozice boxu – vše, co se při operaci s boxem zamyká (P8)."""
     return [p["VnitrniPoziceID"] for p in repozitar.pozice_boxu(spoj, box_id)]
+
+
+def _stitky_boxu(box: dict[str, Any], pozice: list[dict[str, Any]],
+                 cisla: dict[int, str]) -> list[domena.Stitek]:
+    """Štítky jednoho boxu: hlavní a za ním pozice v pořadí boxu, STAT s číslem dílu z přiřazení."""
+    return domena.sticky_boxu(box["KodBoxu"], box["KodTypu"],
+                              [domena.PodkladStitku(p["KodPozice"], cisla.get(p["VnitrniPoziceID"]))
+                               for p in pozice])
 
 
 def _prepsat(spoj: Spojeni, kdo: Kontext, tabulka: str, objekt_id: int, sloupce: dict[str, str],
