@@ -1,1 +1,1 @@
-/* Migrace nepublikuje žádné pohledy. Staging tabulky stg.* zakládá migrace 004 (fáze 1). */
+/* Migrace nepublikuje žádné pohledy. Staging tabulky stg.* zakládá migrace 007 (fáze 1). */
