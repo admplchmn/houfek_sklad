@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from pydantic import Field, SecretStr
 
-from app.platforma.kontrakty import Duvod, FiltrAktivni, Strankovani, Vstup, Vystup, Zmena
+from app.platforma.kontrakty import Cas, Duvod, FiltrAktivni, Strankovani, Vstup, Vystup, Zmena
 
 # --- výstupy ------------------------------------------------------------------------------------
 
@@ -41,6 +41,7 @@ class UzivatelRadek(Vystup):
     ma_pin: bool
     ma_kartu: bool
     aktivni: bool
+    zamceno_do: Cas | None = None      # D-33: dokud trvá zámek, správa podle toho pozná, koho odemknout
 
 
 class RoleRadek(Vystup):

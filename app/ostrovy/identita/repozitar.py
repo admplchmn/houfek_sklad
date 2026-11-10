@@ -1,9 +1,9 @@
 """SQL ostrova B – Identita. Zápis jen do vlastních tabulek (P1), čtení cizích dat jen z pohledů v_* (P2).
 
-Tabulky ostrova: `Uzivatel`, `Role`, `Opravneni`, `RoleOpravneni`, `Terminal`. Pracoviště je
-cizí tabulka (ostrov C) a ostrov C v této fázi ještě nedává pohled na číselník pracovišť –
-neexistující pracoviště proto poznáme až porušením cizího klíče a `cizi_id` z něj udělá
-VALIDATION_ERROR na dané pole (P7).
+Tabulky ostrova: `Uzivatel`, `Role`, `Opravneni`, `RoleOpravneni`, `Terminal`,
+`PrihlaseniPokus` (pokusy o přihlášení se jen zapisují). Pracoviště je cizí tabulka (ostrov C)
+a ostrov C v této fázi ještě nedává pohled na číselník pracovišť – neexistující pracoviště proto
+poznáme až porušením cizího klíče a `cizi_id` z něj udělá VALIDATION_ERROR na dané pole (P7).
 
 `PinHash` a `KodKarty` se nečtou nikdy spolu s výčtem uživatelů – najevo jdou jen `maPin`
 a `maKartu`. Jediné čtení, které hash vidí, je `uzivatel_podle_cisla` při přihlášení.
@@ -13,6 +13,7 @@ Parametry vždy přes `?`, názvy tabulek i sloupců jsou pevné – nikdy se ne
 from __future__ import annotations
 
 from contextlib import contextmanager
+from datetime import datetime
 
 from app.platforma.chyby import chyba_vstupu
 from app.platforma.db import Spojeni, po_davkach
@@ -22,7 +23,8 @@ FK_CIZI_OBJEKT = 547     # porušení cizího klíče (např. neexistující pra
 
 _UZIVATEL = ("SELECT u.UzivatelID, u.OsobniCislo, u.Jmeno, u.Prijmeni, u.RoleID, r.KodRole,"
              " CAST(CASE WHEN u.PinHash IS NULL THEN 0 ELSE 1 END AS BIT) AS MaPin,"
-             " CAST(CASE WHEN u.KodKarty IS NULL THEN 0 ELSE 1 END AS BIT) AS MaKartu, u.Aktivni"
+             " CAST(CASE WHEN u.KodKarty IS NULL THEN 0 ELSE 1 END AS BIT) AS MaKartu, u.Aktivni,"
+             " u.ZamcenoDo"
              " FROM dbo.Uzivatel AS u JOIN dbo.Role AS r ON r.RoleID = u.RoleID")
 
 _ROLE = ("SELECT r.RoleID, r.KodRole, r.NazevRole, r.Popis, r.Aktivni, o.KodOpravneni"
@@ -59,11 +61,15 @@ def _vzor_like(text: str) -> str:
 
 
 def uzivatel_podle_cisla(spoj: Spojeni, osobni_cislo: str) -> dict | None:
-    """Uživatel pro přihlášení – jediné čtení, které vidí `PinHash` (a jen ho vrací dál doméně)."""
+    """Uživatel pro přihlášení – jediné čtení, které vidí `PinHash` (a jen ho vrací dál doméně).
+
+    S `UPDLOCK` se souběžné pokusy o tentýž účet seřadí za sebe, aby se počítadlo chybných
+    pokusů (D-33) neztratilo mezi čtením a zápisem.
+    """
     return spoj.jeden(
         "SELECT u.UzivatelID, u.OsobniCislo, u.Jmeno, u.Prijmeni, u.RoleID, u.PinHash, u.Aktivni,"
-        " r.KodRole, r.NazevRole"
-        " FROM dbo.Uzivatel AS u JOIN dbo.Role AS r ON r.RoleID = u.RoleID"
+        " u.ChybnePokusy, u.ZamcenoDo, r.KodRole, r.NazevRole"
+        " FROM dbo.Uzivatel AS u WITH (UPDLOCK) JOIN dbo.Role AS r ON r.RoleID = u.RoleID"
         " WHERE u.OsobniCislo = ?", osobni_cislo)
 
 
@@ -100,6 +106,27 @@ def opravneni_role(spoj: Spojeni, role_id: int) -> list[str]:
         "SELECT o.KodOpravneni FROM dbo.RoleOpravneni AS ro"
         " JOIN dbo.Opravneni AS o ON o.OpravneniID = ro.OpravneniID"
         " WHERE ro.RoleID = ? ORDER BY o.KodOpravneni", role_id)]
+
+
+def nastav_zamek(spoj: Spojeni, uzivatel_id: int, *, chybne_pokusy: int, zamceno_do: datetime | None) -> None:
+    """Nový stav zámku (D-33): zapisuje ho přihlášení podle pravidla i odemknutí správcem."""
+    spoj.proved("UPDATE dbo.Uzivatel SET ChybnePokusy = ?, ZamcenoDo = ? WHERE UzivatelID = ?",
+                chybne_pokusy, zamceno_do, uzivatel_id)
+
+
+def stav_zamku(spoj: Spojeni, uzivatel_id: int) -> dict | None:
+    """Počítadlo a zámek (D-33) pro audit odemknutí; `None` uživatel neexistuje."""
+    return spoj.jeden("SELECT ChybnePokusy, ZamcenoDo FROM dbo.Uzivatel WHERE UzivatelID = ?", uzivatel_id)
+
+
+def zapis_pokus(spoj: Spojeni, *, osobni_cislo: str, uzivatel_id: int | None, terminal_id: int | None,
+                vysledek: str) -> None:
+    """Jeden řádek historie pokusů (D-33). Otevřený PIN se nikam neuvádí, čas má DEFAULT SYSUTCDATETIME().
+
+    `uzivatel_id` a `terminal_id` se vyplní jen tehdy, když ten který řádek při pokusu existoval.
+    """
+    spoj.proved("INSERT INTO dbo.PrihlaseniPokus (OsobniCislo, UzivatelID, TerminalID, Vysledek)"
+                " VALUES (?, ?, ?, ?)", osobni_cislo, uzivatel_id, terminal_id, vysledek)
 
 
 # --- uživatelé ------------------------------------------------------------------------------------

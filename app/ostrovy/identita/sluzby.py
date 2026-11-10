@@ -15,7 +15,7 @@ from pydantic import SecretStr
 from app.platforma import audit
 from app.platforma.chyby import AppError, chyba_vstupu
 from app.platforma.db import Spojeni, cteni
-from app.platforma.kontrakty import DuvodVstup, Seznam, Strana
+from app.platforma.kontrakty import DuvodVstup, Seznam, Strana, teď
 from app.platforma.transakce import transakce
 from app.platforma.typy import Kontext
 
@@ -42,25 +42,37 @@ ZMENENO = "změněno"      # hodnota PINu a karty se do auditu nikdy nedostane
 # --- přihlášení ------------------------------------------------------------------------------------
 
 
-@cteni
-def over_prihlaseni(spoj: Spojeni, vstup: PrihlaseniVstup) -> PrihlasenyUzivatel:
+@transakce("PRIHLASENI")
+def over_prihlaseni(spoj: Spojeni, vstup: PrihlaseniVstup) -> PrihlasenyUzivatel | None:
     """Osobní číslo + PIN (+ kód terminálu z PDA) → přihlášený uživatel s aktuálními oprávněními role.
 
-    Neznámé číslo, chybný PIN, uživatel bez PINu i neaktivní uživatel vrací stejnou chybu
-    NOT_AUTHENTICATED (7.2 „Hotovo, když“). Hash se ověřuje i pro neexistující číslo, aby délka
-    odpovědi nic neprozradila. Zámek po chybných pokusech je TD-07/Q-33, zatím se nehlídá.
-    Chyby: NOT_AUTHENTICATED, VALIDATION_ERROR (neznámý nebo vyřazený terminál).
+    Neúspěch se vrací jako `None`, nikoli jako AppError: @transakce by při chybě vrátil zpět i
+    počítadlo, zámek a řádek pokusu, které potvrzené zůstat mají. Chybu NOT_AUTHENTICATED vyvolá
+    až endpoint, takže neznámé číslo, chybný PIN, uživatel bez PINu, vyřazený i zamčený účet
+    odpoví vždy stejně (7.2 „Hotovo, když“). Hash se ověřuje vždy, i když se jeho výsledek
+    nepoužije – odpověď nesmí nic prozradit (kontrakt B).
+
+    Každý pokus je jeden řádek `PrihlaseniPokus` bez PINu; pět chybných PINů po sobě zamkne účet
+    na 15 minut a úspěch počítadlo vynuluje (D-33, pravidlo `domena.vyhodnot_pokus`).
+    Chyby: VALIDATION_ERROR (neznámý nebo vyřazený terminál).
     """
     terminal = _terminal_pri_prihlaseni(spoj, vstup.kod_terminalu)
     try:
         cislo = domena.normalizuj_osobni_cislo(vstup.osobni_cislo)
     except AppError:
         raise AppError("NOT_AUTHENTICATED", ZPRAVA_NEPLATNE) from None
-    radek = repozitar.uzivatel_podle_cisla(spoj, cislo)
-    if not domena.pin_sedi(vstup.pin.get_secret_value(), radek["PinHash"] if radek else None):
-        raise AppError("NOT_AUTHENTICATED", ZPRAVA_NEPLATNE)
-    if radek is None or not radek["Aktivni"]:
-        raise AppError("NOT_AUTHENTICATED", ZPRAVA_NEPLATNE)
+    radek = repozitar.uzivatel_podle_cisla(spoj, cislo) or {}
+    platny_pin = domena.pin_sedi(vstup.pin.get_secret_value(), radek.get("PinHash"))
+    vysledek, chybne_pokusy, zamceno_do = domena.vyhodnot_pokus(
+        existuje=bool(radek), aktivni=bool(radek.get("Aktivni")), zamceno_do=radek.get("ZamcenoDo"),
+        pin_plati=platny_pin, chybne_pokusy=int(radek.get("ChybnePokusy", 0)), ted=teď())
+    if radek:
+        repozitar.nastav_zamek(spoj, int(radek["UzivatelID"]), chybne_pokusy=chybne_pokusy,
+                               zamceno_do=zamceno_do)
+    repozitar.zapis_pokus(spoj, osobni_cislo=cislo, uzivatel_id=radek.get("UzivatelID"),
+                          terminal_id=terminal.terminal_id if terminal else None, vysledek=vysledek)
+    if vysledek != domena.POKUS_USPECH:
+        return None
     return PrihlasenyUzivatel(
         uzivatel_id=int(radek["UzivatelID"]), osobni_cislo=radek["OsobniCislo"],
         cele_jmeno=domena.cele_jmeno(radek["Jmeno"], radek["Prijmeni"]),
@@ -200,6 +212,27 @@ def nastav_pin(spoj: Spojeni, uzivatel_id: int, vstup: ResetPinuVstup, kdo: Kont
     return _nacti_uzivatele(spoj, uzivatel_id)
 
 
+@transakce("UZIVATEL_ODEMKNUTI")
+def odemknout_uzivatele(spoj: Spojeni, uzivatel_id: int, vstup: DuvodVstup, kdo: Kontext) -> UzivatelRadek:
+    """Správce uvolní účet zamčený chybnými PINy (D-33): počítadlo i zámek jdou na nulu.
+
+    Účet bez zámku a bez pokusů se nepřepisuje ani neaudituje – jako u deaktivace.
+    Chyby: NOT_FOUND (uživatel).
+    """
+    zamek = repozitar.stav_zamku(spoj, uzivatel_id)
+    if zamek is None:
+        raise AppError("NOT_FOUND", f"Uživatel {uzivatel_id} neexistuje.")
+    zmeny: list[tuple[str, Any, Any]] = []
+    if zamek["ChybnePokusy"]:
+        zmeny.append(("ChybnePokusy", zamek["ChybnePokusy"], 0))
+    if zamek["ZamcenoDo"] is not None:
+        zmeny.append(("ZamcenoDo", zamek["ZamcenoDo"], None))
+    if zmeny:
+        repozitar.nastav_zamek(spoj, uzivatel_id, chybne_pokusy=0, zamceno_do=None)
+        _zaloguj(spoj, kdo, "UZIVATEL", uzivatel_id, zmeny, vstup.duvod)
+    return _nacti_uzivatele(spoj, uzivatel_id)
+
+
 # --- role (UZIVATEL_EDIT) ------------------------------------------------------------------------
 
 
@@ -329,7 +362,7 @@ def _uzivatel(radek: dict) -> UzivatelRadek:
                          cele_jmeno=domena.cele_jmeno(radek["Jmeno"], radek["Prijmeni"]),
                          role_id=int(radek["RoleID"]), kod_role=radek["KodRole"],
                          ma_pin=bool(radek["MaPin"]), ma_kartu=bool(radek["MaKartu"]),
-                         aktivni=bool(radek["Aktivni"]))
+                         aktivni=bool(radek["Aktivni"]), zamceno_do=radek["ZamcenoDo"])
 
 
 def _role_s_opravnenimi(radky: list[dict]) -> list[RoleRadek]:
