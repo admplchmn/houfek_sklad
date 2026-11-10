@@ -91,11 +91,10 @@ Rozhodlo sdílené PDA a požadavek na okamžité odebrání práv. A a B potře
   - výměna `HOUFEK_TAJNY_KLIC` odhlásí všechny (plánovat mimo směnu);
   - nové endpointy nesmí přijímat formuláře (`application/x-www-form-urlencoded`), jinak padá druhá vrstva ochrany proti CSRF.
 - **Přehodnotit:**
-  - časový limit nečinnosti na sdílených PDA (TD-06), dnes platí 12 h od přihlášení;
   - pokud chce provoz vidět přihlášené terminály, přejít na B.
 
 ## Úkoly
 
 1. [x] `auth.py`: cookie, `@verejne`, `@vyzaduje`, hák `overeni_kontextu` (CR-10), náhodný vývojový klíč (CR-03).
 2. [ ] Ostrov B: `POST /prihlaseni`, argon2, zámek po opakovaných chybných PINech (TD-07), `overeni_kontextu` nad `v_Uzivatel`.
-3. [ ] Rozhodnout limit nečinnosti pro role terminálů (TD-06).
+3. [x] Rozhodnout limit nečinnosti pro role terminálů (TD-06; D-34: PDA 15 minut posuvně na serveru, PC 12 h beze změny).

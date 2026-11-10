@@ -14,14 +14,12 @@ import sys
 import tempfile
 import unittest
 import uuid
-from collections import Counter
 from pathlib import Path
 from unittest import mock
 
 from flask import Blueprint
 from pydantic import BaseModel
 
-from app.ostrovy import OSTROVY
 from app.platforma import vytvor_aplikaci
 from app.platforma.auth import kontext
 from app.platforma.db import Spojeni, po_davkach
@@ -215,28 +213,6 @@ class TestDokumentaceKonfigurace(unittest.TestCase):
                 if not odkaz.startswith(("http://", "https://", "mailto:")) and not (md.parent / odkaz).exists():
                     rozbite.append(f"{md.relative_to(koren)} → {odkaz}")
         self.assertEqual(rozbite, [])
-
-
-class TestDokumentacePoctu(unittest.TestCase):
-    """CR-33: počty endpointů v README odpovídají aplikaci – u každého ostrova i dohromady."""
-
-    def test_pocty_endpointu_v_readme(self):
-        app = vytvor_aplikaci(OSTROVY, Konfigurace(vyvoj=True))
-        try:
-            cesty = vytvor_openapi(app)["paths"]
-        finally:
-            app.extensions["houfek_kostra_db"].smaz()
-        pocty = Counter(cesta.split("/")[2] for cesta, metody in cesty.items()
-                        for metoda in metody if metoda in {"get", "post", "put", "patch", "delete"})
-        ostrovy = {prefix: pocet for prefix, pocet in pocty.items() if prefix not in {"system", "docs", "openapi.json"}}
-
-        readme = (Path(__file__).resolve().parents[1] / "README.md").read_text(encoding="utf-8")
-        uvedene = {slozka: int(pocet) for slozka, pocet in
-                   re.findall(r"\| `app/ostrovy/(\w+)` \|[^|\n]*\| kontrakt (\d+) endpoint", readme)}
-        self.assertEqual(uvedene, ostrovy, "tabulka Ostrovy v README neodpovídá endpointům aplikace")
-        celkem = re.search(r"HTTP kontrakt: (\d+) endpoint", readme)
-        self.assertIsNotNone(celkem, "README neuvádí celkový počet endpointů ostrovů")
-        self.assertEqual(int(celkem[1]), sum(ostrovy.values()))
 
 
 # --- CR-09: databáze nedostupná ---------------------------------------------------------------

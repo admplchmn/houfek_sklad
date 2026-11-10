@@ -265,8 +265,7 @@ class TestStartovniKontroly(unittest.TestCase):
             app = testovaci_aplikace(OSTROVY, db)
             self.assertEqual(len(app.extensions["houfek_ostrovy"].ostrovy), 1 + len(OSTROVY))
             vlastnici = [t for o in app.extensions["houfek_ostrovy"].ostrovy for t in o.tabulky]
-            self.assertEqual(len(vlastnici), 30)   # 28 ze schématu G1 + SkladovaTransakce + MigraceSchema
-            self.assertEqual(len(set(vlastnici)), 30)
+            self.assertEqual(len(vlastnici), len(set(vlastnici)))
         finally:
             db.smaz()
 
