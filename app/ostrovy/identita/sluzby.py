@@ -357,12 +357,17 @@ def _zaloguj(spoj: Spojeni, kdo: Kontext, typ_objektu: str, objekt_id: int,
 
 
 def _uzivatel(radek: dict) -> UzivatelRadek:
+    """`zamcenoDo` se ukazuje jen dokud zámek trvá (D-33): po 15 minutách přestal platit, takže už
+    nemá koho odemknout a správce by mátl. Ve sloupci zůstává – přihlašování i odemknutí čtou skutečnou
+    hodnotu, ne to, co viděl správce."""
+    zamek = radek["ZamcenoDo"]
     return UzivatelRadek(uzivatel_id=int(radek["UzivatelID"]), osobni_cislo=radek["OsobniCislo"],
                          jmeno=radek["Jmeno"], prijmeni=radek["Prijmeni"],
                          cele_jmeno=domena.cele_jmeno(radek["Jmeno"], radek["Prijmeni"]),
                          role_id=int(radek["RoleID"]), kod_role=radek["KodRole"],
                          ma_pin=bool(radek["MaPin"]), ma_kartu=bool(radek["MaKartu"]),
-                         aktivni=bool(radek["Aktivni"]), zamceno_do=radek["ZamcenoDo"])
+                         aktivni=bool(radek["Aktivni"]),
+                         zamceno_do=zamek if zamek is not None and zamek > teď() else None)
 
 
 def _role_s_opravnenimi(radky: list[dict]) -> list[RoleRadek]:

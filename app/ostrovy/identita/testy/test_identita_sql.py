@@ -19,7 +19,7 @@ from datetime import datetime, timedelta
 from unittest.mock import patch
 
 from app.ostrovy import OSTROVY
-from app.ostrovy.identita import domena, rozhrani, sluzby
+from app.ostrovy.identita import domena, repozitar, rozhrani, sluzby
 from app.ostrovy.identita.kontrakty import (
     NovyTerminalVstup,
     NovyUzivatelVstup,
@@ -364,6 +364,22 @@ class TestZamekPinu(ZakladIdentit):
                          {"PokusID", "DatumCas", "OsobniCislo", "UzivatelID", "TerminalID", "Vysledek"})
         self.assertNotIn("argon2", str(radky))     # otevřený PIN ani hash se nikde nedočítají
 
+    def test_vyprsimy_zamek_se_v_radeku_nevraci(self):
+        """`zamcenoDo` říká správci, koho odemknout, jen dokud zámek trvá – po 15 minutách null (D-33).
+
+        Ve sloupci zůstává: přihlašování o zámku rozhoduje z jeho hodnoty, ne z toho, co viděl správce.
+        """
+        vyprsel = self.TED - timedelta(minutes=1)
+        with self.ted(self.TED):
+            self.zamkni()
+            radky = sluzby.seznam_uzivatelu.__wrapped__(self.spoj, UzivateleFiltr(hledat=self.cislo))
+            self.assertEqual(radky.polozky[0].zamceno_do, self.ZA_15)     # běžící zámek vidí
+            repozitar.nastav_zamek(self.spoj, self.uzivatel, chybne_pokusy=0, zamceno_do=vyprsel)
+            radky = sluzby.seznam_uzivatelu.__wrapped__(self.spoj, UzivateleFiltr(hledat=self.cislo))
+            self.assertIsNone(radky.polozky[0].zamceno_do)
+            self.assertIsNone(self.zmen(self.uzivatel, jmeno="Jan").zamceno_do)   # výstup jednoho uživatele
+            self.assertEqual(self.stav(self.uzivatel), (0, vyprsel))
+
     # --- odemknutí správcem ------------------------------------------------------------------------
 
     def test_odemknout_vynuluje_pocitadlo_i_zamek(self):
@@ -385,6 +401,24 @@ class TestZamekPinu(ZakladIdentit):
                               ("ZamcenoDo", self.ZA_15.isoformat(), None, "oznameni na podrzi")])
             self.assertEqual(self.stav(self.uzivatel), (0, None))
             self.ok(self.prihlaseni(self.cislo, PIN))        # uvolněný účet se přihlásí hned
+        self.assertEqual(self.pokusy(self.cislo)[-1], "USPECH")
+
+    def test_reset_pinu_neodemkne_aniz_zkratil_zamek(self):
+        """Reset PINu se od odemknutí liší: zámek ani počítadlo nepřepíše (D-33), přístup vrátí až odemknutí."""
+        with self.ted(self.TED):
+            self.zamkni()
+            self.prihlas_admina()
+            data = self.ok(self.klient.post(f"/api/identita/uzivatele/{self.uzivatel}/reset-pinu",
+                                            json={"novyPin": "1357", "duvod": "novy PIN"}))
+            self.assertEqual((data["uzivatelId"], data["maPin"]), (self.uzivatel, True))
+            self.assertIsNotNone(data["zamcenoDo"])                             # výstup pořád ukazuje zámek
+            self.assertEqual(self.stav(self.uzivatel), (0, self.ZA_15))         # sloupce zámku se nepřepsaly
+            obalka = self.chybnou(self.prihlaseni(self.cislo, "1357"), 401, "NOT_AUTHENTICATED")
+            self.assertEqual(obalka["message"], sluzby.ZPRAVA_NEPLATNE)         # stejná odpověď jako chybný PIN
+            self.assertEqual(self.pokusy(self.cislo)[-1], "ZAMCENO")
+            self.ok(self.klient.post(f"/api/identita/uzivatele/{self.uzivatel}/odemknout",
+                                     json={"duvod": "volal na podrzi"}))
+            self.ok(self.prihlaseni(self.cislo, "1357"))                        # novým PINem až po odemknutí
         self.assertEqual(self.pokusy(self.cislo)[-1], "USPECH")
 
     def test_odemknuti_bez_zamku_se_neaudituje(self):
