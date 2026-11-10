@@ -71,8 +71,7 @@ Vlastníci jsou podle varianty pro 6 lidí. Varianty pro 4 a 5 lidí jsou v doku
 - **Pro ostatní:** `nacti_uzivatele` (G), pohledy `v_Uzivatel` a `v_Terminal`.
 - **Otevřené:**
   - Q-18, Q-24 a Q-32 (brána G4);
-  - přiřazení oprávnění rolím;
-  - limit nečinnosti na PDA (TD-06).
+  - přiřazení oprávnění rolím.
 - **Hotovo, když:** přihlášení a správa uživatelů běží proti SQL Serveru a vyřazený uživatel ztratí přístup hned.
 
 ### C – Struktura skladu a kódy (P2)

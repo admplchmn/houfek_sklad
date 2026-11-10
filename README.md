@@ -10,8 +10,7 @@ Technologie: Flask + Microsoft SQL Server. Aplikace je jeden celek rozdělený n
 
 **Stav (3. 11. 2026):** fáze 0 hotová, kontrakty připravené k bráně K1.
 - Platforma je hotová.
-- Ostrovy B–G mají hotový HTTP kontrakt: 73 endpointů (B 13, C 24, D 10, E 11, F 6, G 9) a čistá pravidla
-  s testy a kostru služeb nad vzorovými daty; se 6 operacemi Platformy je ve snímku 79 operací.
+- Ostrovy B–G mají hotový HTTP kontrakt (snímek `kontrakty/openapi.json`, ve vývoji Swagger `/api/docs`) a čistá pravidla s testy a kostru služeb nad vzorovými daty.
 - Projekt je zkontrolovaný proti obrázkům zadání kap. 5–21 ([kontrolní seznam](docs/soulad-se-zadanim.md)).
 - Snímek kontraktů v `kontrakty/` je kandidát pro bránu K1. Do zmrazení ho smí přeuložit jen P1, potom se kontrakty jen přidávají.
 - Migrace 001–004 jsou připravené. Spustí je testovací SQL Server v Dockeru (`docker-compose.yml`), zatím je ověřil jen statický rozbor.
@@ -70,12 +69,12 @@ Zadání, analýza a pravidla mezi ostrovy jsou ve dvou sdílených dokumentech:
 | Ostrov | Složka | Vlastník | Stav fáze 0 |
 |---|---|---|---|
 | A Platforma | `app/platforma` | P1 | hotovo: transakce, `requestId`, chyby, obálka, přihlášení, audit, migrace (+ zámek upgradu), OpenAPI, UI základ, běh bez DB |
-| B Identita | `app/ostrovy/identita` | P1 | kontrakt 13 endpointů; pravidla PINu a rolí, hash argon2, hák `overeni_kontextu`; kostra |
-| C Struktura | `app/ostrovy/struktura` | P2 | kontrakt 24 endpointů; parser, kódy a řady boxů, pořadí, šablona C1–C7, SVG 17.1, zámky hotové; kostra |
-| D Díly | `app/ostrovy/dily` | P4 | kontrakt 10 endpointů; normalizace čísla a číselníků, potřeba místa V6 hotové; kostra |
-| E Sklad | `app/ostrovy/sklad` | P3 | kontrakt 11 endpointů; kontroly příjmu, výdeje a přesunu, upozornění zásoby, kandidáti hotové; kostra |
-| F Inventura | `app/ostrovy/inventura` | P5 | kontrakt 6 endpointů; vyhodnocení, přepočet, plán korekcí hotové; kostra |
-| G Přehledy | `app/ostrovy/prehledy` | P6 | kontrakt 9 endpointů; barvy, souhrn, laser (Q-22) hotové; kostra přes rozhraní B–E |
+| B Identita | `app/ostrovy/identita` | P1 | kontrakt hotový; pravidla PINu a rolí, hash argon2, hák `overeni_kontextu`; kostra |
+| C Struktura | `app/ostrovy/struktura` | P2 | kontrakt hotový; parser, kódy a řady boxů, pořadí, šablona C1–C7, SVG 17.1, zámky hotové; kostra |
+| D Díly | `app/ostrovy/dily` | P4 | kontrakt hotový; normalizace čísla a číselníků, potřeba místa V6 hotové; kostra |
+| E Sklad | `app/ostrovy/sklad` | P3 | kontrakt hotový; kontroly příjmu, výdeje a přesunu, upozornění zásoby, kandidáti hotové; kostra |
+| F Inventura | `app/ostrovy/inventura` | P5 | kontrakt hotový; vyhodnocení, přepočet, plán korekcí hotové; kostra |
+| G Přehledy | `app/ostrovy/prehledy` | P6 | kontrakt hotový; barvy, souhrn, laser (Q-22) hotové; kostra přes rozhraní B–E |
 | H Migrace | `app/ostrovy/migrace` | P4 | kostra CLI; po vzorku XLSM |
 
 Vzor celé svislé cesty (endpoint → služba → doména → repozitář → tabulka) je `app/ostrovy/_sablona`. Funkce rozhraní označené `KOSTRA (fáze 0)` vracejí vzorová data a v provozním režimu selžou. Vlastník je nahradí **beze změny podpisu**.
