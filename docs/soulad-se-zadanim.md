@@ -1,16 +1,16 @@
 # Soulad se zadáním: kontrolní seznam
 
-**Stav k:** 9. 11. 2026 · **Pro:** vedoucího projektu a programátory všech ostrovů · **Zadání:** v1.40, obrázky ke kap. 5–21 · **Rozsah:** schéma (`sql/migrace`), kontrakty a pravidla ostrovů B–G, vzorek XLSM ([rozbor](migrace-xlsm.md))
+**Stav k:** 9. 11. 2026 večer · **Pro:** vedoucího projektu a programátory všech ostrovů · **Zadání:** v1.40, obrázky ke kap. 5–21 · **Rozsah:** schéma (`sql/migrace`), kontrakty a pravidla ostrovů B–G, vzorek XLSM ([rozbor](migrace-xlsm.md))
 
 Obrázky ze zadání se dodržují striktně. Kde si zadání protiřečí nebo dává nelogický scénář, rozhoduje vedoucí projektu. Rozhodnutí jsou v tabulce níže. Než ostrov změní chování popsané v zadání, zkontroluje tento seznam.
 
 Čísla R-xx (rozpory), A-xx (nejasnosti) a Q-xx (otázky) jsou ze sdíleného dokumentu „Analýza zadání a osnova aplikace“.
 
-**Výsledek k 9. 11.:**
+**Výsledek k 9. 11. večer:**
 - Schéma, kontrakty a pravidla odpovídají obrázkům kap. 5–21.
 - Kontrola našla 7 rozdílů (Z-01 až Z-07), všechny jsou opravené a mají test.
-- Vedoucí projektu rozhodl 34 sporných bodů (D-01 až D-34); 9. 11. jich přibylo 24 (D-11 až D-34), včetně výchozích oprávnění rolí (matice G4, D-23).
-- Tři rozhodnutí mají otevřený detail, ve kterém se pokračovat nedá: D-15 (kde se varování nad maximum ukáže), D-27 (zda cílem korekce smí být blokovaná pozice) a D-34 (limit nečinnosti na PC).
+- Vedoucí projektu rozhodl 35 sporných bodů (D-01 až D-35); 9. 11. jich přibylo 25 (D-11 až D-35), včetně výchozích oprávnění rolí (matice G4, D-23).
+- Žádné rozhodnutí nezůstává s otevřeným detailem: D-15, D-27 a D-34 rozhodl vedoucí projektu večer 9. 11. a k D-26 schválil výklad.
 - Dva body jsou náš výklad a dají se změnit (V-01, V-02).
 
 ## Opraveno
@@ -45,7 +45,7 @@ Všechna nová pole jsou přidaná, nic se nepřejmenovalo ani neubralo (P10).
 | D-12 | 9. 11. | Q-08: uskladnění do STAT | zdroj volí obsluha: DYN pozice (celá dávka i část) nebo „z výroby“; poslední operaci obsluha výslovně potvrdí volbou operace, systém ji neodvozuje | E, odpovídá kroku 1 |
 | D-13 | 9. 11. | Q-09: co blokace blokuje | příjem, výdej i přesun na blokovaném zdroji i cíli; inventuru ani její korekce nezastaví; důvod, uživatel a čas v `AuditZmen`; blokují SKL, MISTR a ADMIN | C, E (korekce blokaci nekontroluje) |
 | D-14 | 9. 11. | Q-10: chybí volná pozice správné velikosti | nabídnou se označené ostatní regály pracoviště; varianta „větší pozice pro MISTRa“ se nedělá, DYN vyžaduje přesnou velikost | E, odpovídá kroku 1 |
-| D-15 | 9. 11. | Q-11: maximum STAT | měkké: příjem nad maximum dokončit jde, ale až po zobrazení varování. **Otevřené:** zda varování ukáže obrazovka před odesláním (API beze změny), nebo server napoprvé odmítne a čeká na potvrzení | E |
+| D-15 | 9. 11. | Q-11: maximum STAT | měkké: příjem nad maximum dokončit jde, ale až po zobrazení varování. **Rozhodnuto 9. 11. (varianta a):** obrazovka ukáže varování před odesláním, pokud je překročení známé už tehdy; server zaúčtuje příjem jedním požadavkem a ve výsledku vrátí skutečné varování podle stavu ověřeného při zápisu; žádné druhé odeslání, potvrzovací příznak ani nový povinný prvek API; maximum zůstává měkké a varování není odmítnutí; vznikne-li překročení až souběžnou změnou, obrazovka ukáže aspoň varování ze serverové odpovědi. | E |
 | D-16 | 9. 11. | Q-13: upozornění zásoby | jedno otevřené na STAT místo; při zhoršení se aktualizuje; samo se uzavře až nad minimem; 0 ks = VYCERPANO i při minimu 0; ručně uzavírá MISTR nebo ADMIN, vždy s poznámkou; TECH jen čte | E, matice G4 |
 | D-17 | 9. 11. | Q-14: blokovaný STAT cíl | POSITION_BLOCKED, nic se nezmění, dávka zůstane v DYN; kontrola znovu uvnitř transakce | E, odpovídá kroku 1 |
 | D-18 | 9. 11. | Q-15: sken cíle | na terminálu (PDA) povinný sken; ruční potvrzení jen na PC s RUCNI_POTVRZENI, ověří server; u pohybu se uloží RUCNE, jinak SKEN | migrace 005, E |
@@ -56,15 +56,16 @@ Všechna nová pole jsou přidaná, nic se nepřejmenovalo ani neubralo (P10).
 | D-23 | 9. 11. | G4: výchozí oprávnění rolí | matice 9.9 analýzy bez TECH u UPOZORNENI_UZAVRIT (tabulka níže) | migrace 005 |
 | D-24 | 9. 11. | Q-32: víc rolí na uživatele | právě jedna role, žádná individuální oprávnění | B, odpovídá |
 | D-25 | 9. 11. | Q-24: oprávnění podle pracoviště | ve V1 ne; pracoviště terminálu jen předvyplní filtry | beze změny |
-| D-26 | 9. 11. | Q-16: inventura za provozu | bez celoskladového zámku; položka si při fyzické kontrole uloží poslední PohybID pozice; při dokončení se stav a pozdější pohyby ověří znovu v téže transakci; pozdější pohyb nepřepíše zjištěný díl ani počet; jednoznačné změny množství téhož dílu se dopočtou; změna dílu, uvolnění a nové obsazení pozice, rekonfigurace nebo jiná nejasná změna → položka znovu k fyzické kontrole; dočasná blokace boxu nebo pozice je volitelná | migrace 005, F |
-| D-27 | 9. 11. | Q-17, S-22: jiný díl na pozici | ve STAT i v DYN: očekávaný díl se odúčtuje, nalezený se zaúčtuje na zvolený cíl, při dokončení znovu ověřený (volná neblokovaná DYN pozice přesné velikosti, nebo STAT místo přiřazené nalezenému dílu); současná pozice jen tehdy, když pro nalezený díl po korekci platí; bez cíle nejde inventuru dokončit; všechny korekce pohyby v jedné transakci, přímý přepis `DilID` zakázaný. **Otevřené:** smí být cílem současná pozice, když je blokovaná (Q-09 × Q-17) | F |
+| D-26 | 9. 11. | Q-16: inventura za provozu | bez celoskladového zámku; položka si při fyzické kontrole uloží poslední PohybID pozice; při dokončení se stav a pozdější pohyby ověří znovu v téže transakci; pozdější pohyb nepřepíše zjištěný díl ani počet; jednoznačné změny množství téhož dílu se dopočtou; změna dílu, uvolnění a nové obsazení pozice, rekonfigurace nebo jiná nejasná změna → položka znovu k fyzické kontrole; dočasná blokace boxu nebo pozice je volitelná. **Výklad schválený 9. 11.:** stav zapsané položky podle pohybů pozice po vodoznaku – žádný pohyb → ZAPSANO; SHODA nebo ROZDIL, všechny pohyby téhož dílu, žádné vyprázdnění pozice s dalším pohybem po něm a nezáporný dopočet (aktuální stav + RozdilKs) → ZAPSANO s dopočtem; jinak (jiný díl, vyprázdnění a nové obsazení, rekonfigurace, záporný dopočet, jakýkoli pohyb u JINY_DIL) → PREPOCITAT, tedy nová fyzická kontrola a nový zápis s novým vodoznakem, ne další automatický výpočet. Pozdější pohyb nikdy nemění SkutecnyDilID ani SkutecnyPocetKs. Při dokončení se po zámku pozic znovu načte aktuální stav i pohyby po vodoznaku, sestaví se aktuální plán korekcí a zaúčtuje se v téže SQL transakci; kontrola jen při zobrazení nestačí. | migrace 005, F |
+| D-27 | 9. 11. | Q-17, S-22: jiný díl na pozici | ve STAT i v DYN: očekávaný díl se odúčtuje, nalezený se zaúčtuje na zvolený cíl, při dokončení znovu ověřený (volná neblokovaná DYN pozice přesné velikosti, nebo STAT místo přiřazené nalezenému dílu); současná pozice jen tehdy, když pro nalezený díl po korekci platí; bez cíle nejde inventuru dokončit; všechny korekce pohyby v jedné transakci, přímý přepis `DilID` zakázaný. **Rozhodnuto 9. 11.:** blokovaná pozice nesmí být cílem nalezeného dílu, ani když jde o současnou pozici; inventurník zvolí jiný platný cíl, nebo se blokace před dokončením odstraní, jinak položka zůstane nevyřešená. Pravidlo platí jen pro výběr cíle u JINY_DIL; Q-09 pro ostatní inventurní kontroly a korekce nemění. | F |
 | D-28 | 9. 11. | Q-22: doporučení pro laser | základ = max(0, Maximum − STAT − DYN, je-li `odecitatDyn` zapnutý); doporučeno = 0 při nulovém základu, jinak základ zaokrouhlený nahoru na standardní dávku (smí přes maximum; díl bez standardní dávky se nezaokrouhluje); výchozí `odecitatDyn` = zapnuto | G |
 | D-29 | 9. 11. | Q-20: počáteční stavy | z fyzické inventury po regálech při spuštění, řízenými pohyby POCAT-STAV; XLSM jen pro struktury a kmenová data; reálný vzorek XLSM je povinný vstup pro H | H |
 | D-30 | 9. 11. | Q-18: terminál | prohlížeč na PDA, čtečka jako klávesnice, osobní číslo + PIN (jen hash); konkrétní Chainway ověřit před pilotem | B, před pilotem |
 | D-31 | 9. 11. | Q-19: štítky | backend generuje PDF s Code 128, ZPL až podle tiskárny; samostatné štítky boxu i vnitřní pozice, i u C1 a C7 | C, před pilotem |
 | D-32 | 9. 11. | Q-23: zmetky | ve V1 bez evidence; vrácené množství standardní operací, rozdíl do poznámky pohybu | beze změny |
 | D-33 | 9. 11. | TD-07 (Q-33): zámek PINu | 5 chybných PINů po sobě → zámek účtu na 15 min; úspěšné přihlášení vynuluje počítadlo; odemknout může ADMIN; pokusy se auditují bez PINu | B, migrace, před pilotem |
-| D-34 | 9. 11. | TD-06 (Q-34): nečinnost | PDA: odhlášení po 15 min nečinnosti, posuvné, platí na serveru. **Otevřené:** limit na PC (dnes 12 h) | B, platforma, před pilotem |
+| D-34 | 9. 11. | TD-06 (Q-34): nečinnost | PDA: odhlášení po 15 min nečinnosti, posuvné, platí na serveru. TD‑06 hotové: PDA 15 minut posuvně na serveru; PC stávajících 12 hodin beze změny. | B, platforma, před pilotem |
+| D-35 | 9. 11. | kód boxu z předtištěného štítku | ano, nepovinně: do zakládání boxu se přidá nepovinné `KodBoxu`, obsluha ho naskenuje nebo zadá; prázdná hodnota = automatické číslo řady; zadaný kód se normalizuje, ověří se formát a jedinečnost, kolize box nevytvoří; `KodBoxu` a `FullBoxKlic` jsou v databázi jedinečné; `FullBoxKlic` a kódy vnitřních pozic odvozuje systém, obsluha do nich nezasahuje | C |
 
 Schéma 001 ještě nikde v provozu neběželo, proto `Dil.Poznamka` přibyl přímo do něj. Po prvním spuštění už jen novou migrací (ADR-0003).
 

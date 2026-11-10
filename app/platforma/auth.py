@@ -8,7 +8,7 @@
   ověří, že uživatel je stále aktivní, a vrátí jeho aktuální oprávnění. Odebrání práv nebo
   deaktivace pak platí okamžitě, ne až po vypršení session.
 - Relace přihlášená z terminálu (PDA) navíc vyprší po 15 minutách nečinnosti (TD-06, D-34).
-  Bez terminálu (PC) platí i nadále 12 h, limit na PC ještě rozhodnutý není.
+  Bez terminálu (PC) zůstává i nadále 12 h beze změny (D-34 z 9. 11.).
 """
 from __future__ import annotations
 
@@ -58,7 +58,7 @@ def _overe_necinnost(data: dict) -> None:
 
     Čas poslední přihlášené aktivity držíme v session a obnovujeme ho tady, tedy na každém
     požadavku, který přihlášení vyžaduje – posuvně, jak stanoví D-34. Relace bez terminálu (PC)
-    se řídí `PERMANENT_SESSION_LIFETIME` 12 h, ke které se limit na PC teprve doplní (D-34).
+    zůstává na `PERMANENT_SESSION_LIFETIME` 12 h beze změny (D-34 z 9. 11.).
     """
     if data.get("terminalId") is None:
         return
