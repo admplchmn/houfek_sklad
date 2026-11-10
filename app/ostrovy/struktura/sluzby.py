@@ -268,7 +268,7 @@ def vymen_box(spoj: Spojeni, box_id: int, vstup: VymenaBoxuVstup, kdo: Kontext) 
     Chyby: NOT_FOUND, NOT_EMPTY (obsah nebo STAT přiřazení), ALREADY_EXISTS (kód ze štítku i vyřazeného
     boxu), VALIDATION_ERROR (kód nebo číslo), BOX_SERIES_FULL.
     """
-    stary = _nacti_box(spoj, box_id)
+    stary = _nacti_aktivni_box(spoj, box_id)
     zamkni_mista(spoj, _ids_pozic(spoj, box_id))
     _over_prazdny(spoj, stary)
     kod_boxu = _kod_boxu(spoj, stary["RegalID"], vstup.typ_boxu, vstup.cislo_boxu, vstup.kod_boxu)
@@ -289,7 +289,7 @@ def presun_box(spoj: Spojeni, box_id: int, vstup: PresunBoxuVstup, kdo: Kontext)
     nemění (Q-02). Chyby: NOT_FOUND, VALIDATION_ERROR (stejná úroveň, cizí pracoviště DYN boxu – Q-30,
     pořadí).
     """
-    box = _nacti_box(spoj, box_id)
+    box = _nacti_aktivni_box(spoj, box_id)
     cil = _nacti(repozitar.uroven(spoj, vstup.cil_uroven_id), f"Úroveň {vstup.cil_uroven_id} neexistuje.")
     if cil["UrovenID"] == box["UrovenID"]:
         raise chyba_vstupu("Box už na této úrovni stojí.",
@@ -309,7 +309,7 @@ def zmen_poradi_boxu(spoj: Spojeni, box_id: int, vstup: PoradiBoxuVstup, kdo: Ko
     Mění se jen sloupec Poradi tabulky Pozice (1:1 k boxu, PoziceID zůstávají), proto se audituje pod
     boxem. Chyby: NOT_FOUND, VALIDATION_ERROR (pořadí).
     """
-    box = _nacti_box(spoj, box_id)
+    box = _nacti_aktivni_box(spoj, box_id)
     zamkni_mista(spoj, _ids_pozic(spoj, box_id))
     repozitar.zmen_poradi_boxu(spoj, box, vstup.nove_poradi)
     zapis(spoj, kdo, "BOX", box_id, "Poradi", box["Poradi"], vstup.nove_poradi, vstup.duvod)
@@ -323,7 +323,7 @@ def rekonfiguruj_box(spoj: Spojeni, box_id: int, vstup: RekonfiguraceVstup, kdo:
     Q-27 je otevřený bod: rekonfigurace se dělá jen u boxu bez zásoby a bez STAT přiřazení.
     Chyby: NOT_FOUND, VALIDATION_ERROR (stejné členění), NOT_EMPTY (obsah nebo STAT přiřazení).
     """
-    box = _nacti_box(spoj, box_id)
+    box = _nacti_aktivni_box(spoj, box_id)
     nova = _nacti_cleneni(spoj, vstup.cleneni_id)
     domena.over_rekonfiguraci(box["KodCleneni"], nova["KodCleneni"])
     zamkni_mista(spoj, _ids_pozic(spoj, box_id))
@@ -336,7 +336,7 @@ def rekonfiguruj_box(spoj: Spojeni, box_id: int, vstup: RekonfiguraceVstup, kdo:
 @transakce("BOX_DEAKTIVACE")
 def deaktivuj_box(spoj: Spojeni, box_id: int, vstup: DuvodVstup, kdo: Kontext) -> BoxDetail:
     """Box i jeho Pozice Aktivni = 0, boxy vpravo se posunou doleva. Chyby: NOT_FOUND, NOT_EMPTY."""
-    box = _nacti_box(spoj, box_id)
+    box = _nacti_aktivni_box(spoj, box_id)
     zamkni_mista(spoj, _ids_pozic(spoj, box_id))
     _over_prazdny(spoj, box)
     repozitar.vyrad_box(spoj, box)
@@ -387,6 +387,19 @@ def _nacti_uroven(spoj: Spojeni, uroven_id: int) -> dict[str, Any]:
 
 def _nacti_box(spoj: Spojeni, box_id: int) -> dict[str, Any]:
     return _nacti(repozitar.box(spoj, box_id), f"Box {box_id} neexistuje.")
+
+
+def _nacti_aktivni_box(spoj: Spojeni, box_id: int) -> dict[str, Any]:
+    """Box pro operaci s ním (BOX_EDIT); vyřazený box je NOT_FOUND.
+
+    `repozitar.box` vrací i vyřazený box, aby zůstal dohledat (detail, T22). Po výměně ale starý box
+    sdílí `PoziceID` s novým, takže by operace nad ním sáhla i na pozici pod novým aktivním boxem
+    (nález BOX_NA_NEAKTIVNI_POZICI), a zapsala by se do historie, která se už nemění.
+    """
+    box = _nacti_box(spoj, box_id)
+    if not box["Aktivni"]:
+        raise AppError("NOT_FOUND", f"Box {box['KodBoxu']} je vyřazený.")
+    return box
 
 
 def _nacti_pozici(spoj: Spojeni, vnitrni_pozice_id: int) -> dict[str, Any]:
