@@ -2,12 +2,12 @@
 
 Inventura je nad SQL Serverem: hlavička i položky žijí ve vlastních tabulkách (repozitar), cizí
 data – štítky a velikosti pozic (C), díly (D) a obsah pozic s pohyby (E) – se berou jen jejich
-rozhraním. Stav položky se nikam neukládá, počítá se z pohybů po vodoznaku položky (D-26).
+rozhraním. Stav položky se nikam neukládá, počítá se z pohybů po vodoznaku položky (D-26)
+a jen dokud je inventura rozpracovaná.
 
-Dokončení (krok 1): zamkne pozice položek i cílů, přepočítá stavy, zkontroluje inventuru
-a připraví plán korekcí (D-27), aby ho krok 2 mohl zaúčtovat přesně tak, jak byl spočítaný.
-Zaúčtování sklad.zauctuj_korekci a stav DOKONCENA přijdou na řadu ve kroku 2 – inventura proto
-zůstává rozpracovaná a výsledek hlásí souhrn bez pohybů.
+Dokončení (21.1.7): zamkne hlavičku inventury i všechny zúčastněné pozice, přepočítá stavy,
+zkontroluje inventuru a její cíle nalezených jiných dílů (D-26, D-27), zaúčtuje plán korekcí
+přes sklad.zauctuj_korekci pohyby INVENTURA a inventuru zavře – vše v jedné SQL transakci.
 """
 from __future__ import annotations
 
@@ -34,9 +34,6 @@ from .kontrakty import (
     PolozkaInventury,
     ZapisPolozkyVstup,
 )
-
-NOVY_POHYB = 70001    # KOSTRA: PohybID prvního korekčního pohybu, dokud nenapojíme sklad.zauctuj_korekci
-
 
 # --- čtení ------------------------------------------------------------------------------------
 
@@ -126,10 +123,11 @@ def zrus_inventuru(spoj: Spojeni, inventura_id: int, vstup: DuvodVstup, kdo: Kon
 
 @transakce("INVENTURA_DOKONCENI", skladova=True)
 def dokonci_inventuru(spoj: Spojeni, inventura_id: int, vstup: DokonceniVstup, kdo: Kontext) -> DokonceniVysledek:
-    """Zkontroluje inventuru a připraví plán korekcí (21.1.7) pod zámkem všech zúčastněných pozic.
+    """Zaúčtuje rozdíly a nálezy (21.1.7) a inventuru zavře; všechno v jedné SQL transakci.
 
-    Stav položek i cíle se ověřují až pod zámkem, aby plán seděl na data, nad kterou krok 2
-    zaúčtuje (D-26, D-27). Zaúčtování a uzavření inventury zatím nepřichází na řadu.
+    Stav položek i cíle se ověřují až pod zámkem všech zúčastněných pozic, aby plán seděl na data,
+    nad kterou se účtuje (D-26, D-27). Jakákoli chyba – přepočet, neplatný cíl i chyba ostrova E –
+    vrátí zpět celé dokončení, inventura zůstane rozpracovaná.
     Chyby: NOT_FOUND, CONCURRENT_CHANGE (není rozpracovaná), VALIDATION_ERROR (nezapsané pozice,
     chybějící nebo nevhodný cíl JINY_DIL), INVENTORY_RECOUNT (pozice vrácené k přepočtu).
     """
@@ -141,10 +139,12 @@ def dokonci_inventuru(spoj: Spojeni, inventura_id: int, vstup: DokonceniVstup, k
     polozky = _polozky(spoj, inventura_id)
     domena.over_dokonceni(polozky, vstup.cile_jiny_dil)
     korekce = domena.planuj_korekce(polozky, _over_cile(spoj, polozky, cile))
+    pohyby = _zauctuj_korekce(spoj, kdo, korekce, vstup.poznamka)
+    if repozitar.dokonci(spoj, inventura_id, kdo.uzivatel_id) == 0:
+        raise AppError("CONCURRENT_CHANGE", f"Inventura {inventura_id} už není rozpracovaná.")
     pocty = domena.souhrn(polozky)
     return DokonceniVysledek(inventura_id=inventura_id, pocet_shod=pocty["SHODA"], pocet_rozdilu=pocty["ROZDIL"],
-                             pocet_jinych_dilu=pocty["JINY_DIL"],
-                             pohyby=[NOVY_POHYB + i for i in range(len(korekce))])
+                             pocet_jinych_dilu=pocty["JINY_DIL"], pohyby=pohyby)
 
 
 # --- pomocné -------------------------------------------------------------------------------------
@@ -158,31 +158,37 @@ def _nacti(spoj: Spojeni, inventura_id: int) -> dict[str, Any]:
 
 
 def _rozpracovana(spoj: Spojeni, inventura_id: int) -> dict[str, Any]:
-    inventura = _nacti(spoj, inventura_id)
+    """Hlavička čtená se zámkem pro zápis – operace jedné inventury se seřadí za sebe."""
+    inventura = repozitar.inventura_s_zamkem(spoj, inventura_id)
+    if inventura is None:
+        raise AppError("NOT_FOUND", f"Inventura {inventura_id} neexistuje.")
     if inventura["StavInventury"] != "ROZPRACOVANA":
         stav = "dokončená" if inventura["StavInventury"] == "DOKONCENA" else "zrušená"
         raise AppError("CONCURRENT_CHANGE", f"Inventura {inventura_id} už je {stav}.")
     return inventura
 
 
-def _polozky(spoj: Spojeni, inventura_id: int) -> list[domena.Polozka]:
-    return _polozky_z_radku(spoj, repozitar.polozky(spoj, inventura_id))
+def _polozky(spoj: Spojeni, inventura_id: int, *, uzavrena: bool = False) -> list[domena.Polozka]:
+    return _polozky_z_radku(spoj, repozitar.polozky(spoj, inventura_id), uzavrena=uzavrena)
 
 
 def _polozka(spoj: Spojeni, inventura_id: int, vnitrni_pozice_id: int) -> domena.Polozka:
     return _polozky_z_radku(spoj, [repozitar.polozka(spoj, inventura_id, vnitrni_pozice_id)])[0]
 
 
-def _polozky_z_radku(spoj: Spojeni, radky: list[dict[str, Any]]) -> list[domena.Polozka]:
+def _polozky_z_radku(spoj: Spojeni, radky: list[dict[str, Any]], *,
+                     uzavrena: bool = False) -> list[domena.Polozka]:
     """Řádky položek doplněné o aktuální data z C a E; stav CEKA / ZAPSANO / PREPOCITAT dle D-26.
 
     Neaktivní pozice (po rekonfiguraci) už není ve v_Misto – štítek neznáme, položka se jmenuje
-    podle svého ID a jde k přepočtu.
+    podle svého ID a jde k přepočtu. `uzavrena` = inventura už není rozpracovaná: stav se
+    nepřepočítává, pohyby po vodoznaku se proto ani nečtou.
     """
     ids = [r["VnitrniPoziceID"] for r in radky]
     mista = struktura.nacti_mista(spoj, ids)
     obsah = sklad.obsah_mist(spoj, ids)
-    vodoznaky = {r["VnitrniPoziceID"]: r["PosledniPohybID"] for r in radky if r["SkutecnyPocetKs"] is not None}
+    vodoznaky = ({} if uzavrena else
+                 {r["VnitrniPoziceID"]: r["PosledniPohybID"] for r in radky if r["SkutecnyPocetKs"] is not None})
     pohyby = repozitar.pohyby_po_vodoznaku(spoj, vodoznaky)
     vysledky = []
     for r in radky:
@@ -194,7 +200,7 @@ def _polozky_z_radku(spoj: Spojeni, radky: list[dict[str, Any]]) -> list[domena.
         aktualni = obsah[i].pocet_ks if obsah.get(i) and obsah[i].dil_id == r["OcekavanyDilID"] else 0
         stav = domena.stav_polozky(zapsano=zapsano, dil_id=r["OcekavanyDilID"], vysledek=vysledek,
                                    rozdil_ks=rozdil, aktualni_pocet_ks=aktualni, aktivni=misto is not None,
-                                   pohyby=pohyby.get(i, []))
+                                   uzavrena=uzavrena, pohyby=pohyby.get(i, []))
         vysledky.append(domena.Polozka(i, misto.kod if misto else str(i), misto.typ_boxu if misto else "",
                                        r["OcekavanyDilID"], r["OcekavanyPocetKs"], r["SkutecnyDilID"],
                                        r["SkutecnyPocetKs"], aktualni, stav, r["DatumKontroly"]))
@@ -202,13 +208,14 @@ def _polozky_z_radku(spoj: Spojeni, radky: list[dict[str, Any]]) -> list[domena.
 
 
 def _detail(spoj: Spojeni, radek: dict[str, Any]) -> InventuraDetail:
-    polozky = _polozky(spoj, radek["InventuraID"])
+    polozky = _polozky(spoj, radek["InventuraID"], uzavrena=radek["StavInventury"] != "ROZPRACOVANA")
     return InventuraDetail(**_radek(spoj, radek, polozky).model_dump(exclude={"transakce_id", "varovani"}),
                            polozky=[_vystup_polozky(bool(radek["SlepaInventura"]), p) for p in polozky])
 
 
 def _radek(spoj: Spojeni, radek: dict[str, Any], polozky: list[domena.Polozka] | None = None) -> InventuraRadek:
-    polozky = polozky if polozky is not None else _polozky(spoj, radek["InventuraID"])
+    polozky = (polozky if polozky is not None else
+               _polozky(spoj, radek["InventuraID"], uzavrena=radek["StavInventury"] != "ROZPRACOVANA"))
     return InventuraRadek(
         inventura_id=radek["InventuraID"], typ_rozsahu=radek["TypRozsahu"], cil_id=repozitar.cil(radek),
         stav_inventury=radek["StavInventury"], slepa=bool(radek["SlepaInventura"]),
@@ -254,21 +261,50 @@ def _over_cile(spoj: Spojeni, polozky: list[domena.Polozka],
     """Ověří každý cíl uvnitř transakce (D-27) a vrátí {pozice položky: pozice cíle}.
 
     Současná pozice položky cílem být může – po odúčtování očekávaného dílu je volná, proto se
-    její obsah neposílá a posoudí se jako jakýkoli jiný cíl.
+    její obsah neposílá a posoudí se jako jakýkoli jiný cíl. Stejná DYN pozice cílem dvou položek
+    oběma neslouží: až se zaúčtuje první nález, volná není, takže se posoudí jako obsazená.
     """
     podle_pozice = {p.vnitrni_pozice_id: p for p in polozky}
     overene: dict[int, int] = {}
+    obsazeno: dict[int, sklad.ObsahInfo] = {}    # DYN cíl, na který už míří nález jiné položky
     for pozice_id, cil in cile.items():
         polozka = podle_pozice[pozice_id]
         if not domena.jiny_dil(polozka):
             continue    # souběžný zápis položku mezitím přepsal – cíl už nic nepotřebuje
         vlastni_cil = cil.vnitrni_pozice_id == pozice_id
         cil_obsah = (None if vlastni_cil
-                     else sklad.obsah_mist(spoj, [cil.vnitrni_pozice_id]).get(cil.vnitrni_pozice_id))
+                     else obsazeno.get(cil.vnitrni_pozice_id)
+                     or sklad.obsah_mist(spoj, [cil.vnitrni_pozice_id]).get(cil.vnitrni_pozice_id))
         stat = next((s for s in sklad.stat_mista(spoj, vnitrni_pozice_ids=[cil.vnitrni_pozice_id])
                      if s.dil_id == polozka.skutecny_dil_id), None)
         dil = dily.nacti_dily(spoj, [polozka.skutecny_dil_id])[polozka.skutecny_dil_id]
         domena.over_cil_jiny_dil(cil, nalezeny_dil_id=polozka.skutecny_dil_id, potreba=dil.potreba,
                                  obsah_cilu=cil_obsah, stat_misto_cilu=stat, kod_pozice=polozka.kod)
+        if cil.typ_boxu == "DYN":     # STAT místo naproti tomu kusů z více nálezů snese víc (D-27)
+            obsazeno[cil.vnitrni_pozice_id] = sklad.ObsahInfo(cil.vnitrni_pozice_id, polozka.skutecny_dil_id,
+                                                              polozka.skutecny_pocet_ks)
         overene[pozice_id] = cil.vnitrni_pozice_id
     return overene
+
+
+def _zauctuj_korekce(spoj: Spojeni, kdo: Kontext, korekce: list[domena.Korekce],
+                     poznamka: str | None) -> list[int]:
+    """Zaúčtuje plán korekcí (21.1.7) přes ostrov E – pohyby INVENTURA; vrací jejich PohybID.
+
+    Dva průchody: nejdřív absolutní stavy, které vycházejí ze stavu načteného před účtováním,
+    teprve pak přičtení na cíle jiného dílu – cílem bývá i inventarizovaná pozice a kdyby se na ni
+    přičetlo dřív, její absolutní korekce by přičtené kusy přepsala. Před každým přičtením se čte
+    aktuální obsah cíle, takže dvě přičtení na týž cíl kusy sečtou.
+    """
+    pohyby = []
+    for k in korekce:
+        if k.novy_stav_ks is not None:
+            pohyby.append(sklad.zauctuj_korekci(spoj, kdo, k.vnitrni_pozice_id, k.dil_id, k.novy_stav_ks,
+                                                "INVENTURA", poznamka).pohyb_id)
+    for k in korekce:
+        if k.pricist_ks is not None:
+            soucasny = sklad.obsah_mist(spoj, [k.vnitrni_pozice_id]).get(k.vnitrni_pozice_id)
+            novy_stav = (soucasny.pocet_ks if soucasny else 0) + k.pricist_ks
+            pohyby.append(sklad.zauctuj_korekci(spoj, kdo, k.vnitrni_pozice_id, k.dil_id, novy_stav,
+                                                "INVENTURA", poznamka).pohyb_id)
+    return pohyby

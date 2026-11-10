@@ -70,9 +70,9 @@ class TestStavPolozky(unittest.TestCase):
     změna téhož dílu, jinak se pozice vrací k fyzické kontrole."""
 
     def stav(self, *, zapsano=True, dil_id=12, vysledek="ROZDIL", rozdil_ks=-2, aktualni=30, pohyby=(),
-             aktivni=True):
+             aktivni=True, uzavrena=False):
         return domena.stav_polozky(zapsano=zapsano, dil_id=dil_id, vysledek=vysledek, rozdil_ks=rozdil_ks,
-                                   aktualni_pocet_ks=aktualni, pohyby=pohyby, aktivni=aktivni)
+                                   aktualni_pocet_ks=aktualni, pohyby=pohyby, aktivni=aktivni, uzavrena=uzavrena)
 
     def test_nezapsana_polozka_ceka(self):
         self.assertEqual(self.stav(zapsano=False), "CEKA")
@@ -113,6 +113,14 @@ class TestStavPolozky(unittest.TestCase):
 
     def test_neaktivni_pozice_po_rekonfiguraci(self):
         self.assertEqual(self.stav(aktivni=False), "PREPOCITAT")
+
+    def test_uzavrena_inventura_se_neprepocitava(self):
+        """Dokončená ani zrušená inventura se nepřepočítává – vlastní korekce i každý další pohyb
+        by ji jinak ukázal jako PREPOCITAT."""
+        self.assertEqual(self.stav(pohyby=(pohyb(14, 5),), uzavrena=True), "ZAPSANO")
+        self.assertEqual(self.stav(aktualni=0, pohyby=(pohyb(12, 0),), uzavrena=True), "ZAPSANO")
+        self.assertEqual(self.stav(aktivni=False, uzavrena=True), "ZAPSANO")
+        self.assertEqual(self.stav(zapsano=False, uzavrena=True), "CEKA")
 
 
 class TestCilJinyDil(unittest.TestCase):

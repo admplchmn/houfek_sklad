@@ -43,6 +43,17 @@ def inventura(spoj: Spojeni, inventura_id: int) -> dict[str, Any] | None:
     return spoj.jeden(f"{_INVENTURA} WHERE InventuraID = ?", inventura_id)
 
 
+def inventura_s_zamkem(spoj: Spojeni, inventura_id: int) -> dict[str, Any] | None:
+    """Hlavička inventury uzamčená pro zápis (UPDLOCK) – čte se před zápisem položky, zrušením
+    i dokončením.
+
+    Seřadí operace jedné inventury za sebe: druhé dokončení počká, uvidí DOKONCENA a skončí
+    CONCURRENT_CHANGE místo toho, aby dopočítala a zaúčtovala rozdíl podruhé; zápis položky
+    se zastaví o dokončené inventuře. Čtení pro klienta (`inventura`, `inventury`) čtou bez zámku.
+    """
+    return spoj.jeden(f"{_INVENTURA} WITH (UPDLOCK) WHERE InventuraID = ?", inventura_id)
+
+
 def cil(radek: dict[str, Any]) -> int | None:
     """ID cíle rozsahu z řádku inventury – hodnota sloupce podle TypRozsahu (FULL je bez cíle)."""
     return next((radek[sloupec] for sloupec in _CIL_ROZSAHU.values() if radek[sloupec] is not None), None)
@@ -132,3 +143,14 @@ def zrus(spoj: Spojeni, inventura_id: int, duvod: str) -> None:
     """Zrušená inventura: stav a důvod v poznámce; skladové pohyby se nepíšou (5.11)."""
     spoj.proved("UPDATE dbo.Inventura SET StavInventury = 'ZRUSENA', Poznamka = ? WHERE InventuraID = ?",
                 duvod, inventura_id)
+
+
+def dokonci(spoj: Spojeni, inventura_id: int, uzivatel_id: int) -> int:
+    """Uzavřená inventura: CK_Inventura_Dokonceni chce spolu se stavem i čas a autora dokončení.
+
+    Vrací počet změněných řádků – podmínka na ROZPRACOVANA je součástí UPDATE, takže nula znamená,
+    že stav už mezitím změnil někdo jiný a služba má skončit CONCURRENT_CHANGE.
+    """
+    return spoj.proved("UPDATE dbo.Inventura SET StavInventury = 'DOKONCENA', DatumDokonceni = SYSUTCDATETIME(),"
+                       " DokoncilUzivatelID = ? WHERE InventuraID = ? AND StavInventury = 'ROZPRACOVANA'",
+                       uzivatel_id, inventura_id)
